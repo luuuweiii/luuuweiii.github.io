@@ -1,0 +1,922 @@
+<!doctype html>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+<html
+  class="not-ready lg:text-base"
+  style="--bg: #faf8f1"
+  lang="en-us"
+>
+  <head>
+  <meta charset="utf-8" />
+  <meta http-equiv="X-UA-Compatible" content="IE=edge" />
+  <meta
+    name="viewport"
+    content="width=device-width, initial-scale=1, shrink-to-fit=no"
+  />
+
+  
+  <title>Go HTTP框架原理从零开始到还不错 - Luuuweiii Blog</title>
+
+  
+  <meta name="theme-color" />
+
+  
+  
+  
+  <meta name="description" content="Go 原生HTTP框架解读 HTTP（Hypertext Transfer Protocol）框架作为网络编程的重要工具是众多初学者第一次接触的网络框架，同时Go语言也做了十分优秀的原生支持使得在不引入第三方库的情况下可以用简单的几行代码完成服务端与客户端的搭建工作。在学习过程中，我会非常好奇这些简单命令背后发生的事情，但是深入钻研源码又是一件十分痛苦的事情。
+因此本文系统通过宏观地介绍HTTP框架工作原理，同时辅以必要的源码，一来可以一定程度加深对于网络实现原理的理解，二来阅读官方的代码一定是培养编程习惯养成编程风格最好的途径。
+文章描写较为基础且啰嗦，基于我的书写风格也基于我较低的水平欢迎指正和讨论。 宏观理解 HTTP遵循经典的C-S架构，即服务端(Serve)和客户端(Client)之间通过发起请求与回复进行通信。当然也可以是BS架构，这个在之后讨论。那么我们便可以将服务端和客户端分开来讨论和理解。最后会以思维导图的形式更加清晰地展示这个过程。
+1 服务端: 服务端通常搭建在远程服务器上，我们日常会通过浏览器通过输入网址与服务端进行交互，服务端会返回包含各式各样信息的网页。我们可以将服务端的功能抽象为两步，一是构建服务，二是启动服务。
+1.1 构建服务：
+Q1：我们会自然地发问需要构建一个什么样子的服务呢？
+A1：或许我们可以从日常浏览一个网页形成一个比较具体的理解。比如我们浏览某购物网站，这个网站的首页一定有各种不同的按钮，这些按钮点击后都会产生不同的效果。如果将这些效果抽象为一个个函数Func，那么我们就是要构建一个服务，里面有很多的功能函数并且有其对应的入口，他们构成一一对应的关系。
+如下图，我们可以发现不同的按钮点击后对应的网址是不同的。
+由此我们可以更抽象地描述这个服务具由很多网址或者说是路径(pattern)和处理函数(handler) 的键值对构成。 我们或许可以想到这么多的键值对应该由一个容器统一存储，并且有一个调度器来统一管理。
+Q2：这个容器是什么呢？
+A2：前面提到了存放的是键值对，那么可以自然地想到可以用一个map保存pattern-handle的键值对。
+这个调度器我们称之为路由处理器，或者是HTTP多路复用器，因为众多不同的HTTP请求都经过它来匹配对应的函数。
+Q3：什么是路由呢？
+A3：路由是指网络设备通过网络将信息正确传输到指定目的地的方式，简单来说就是对于传入服务端的信息通过一定的方法找到他应该正确去往的地方，在目前这个具体情况里面就是找到地址对应的处理函数。同时路由管理器还会实现前缀匹配等众多功能，也可以自定义特殊的功能，这一部分后面结合具体源码详细描述。
+1.2 启动服务：
+启动服务换句话来说就是要实现客户端发来的消息服务端可以接受并处理。
+因此可以启动服务转化为两个问题：如何接受消息和如何处理消息。
+Q4:如何接受消息？
+A4：接收消息无非便是用一个For循环不断地监听是否有消息传入，不过此处框架通过被动阻塞的方式防止For循环一直空转长期占用cpu的时间片。同时还使用了一个多路复用的技术，这部分结合代码解释。 Q5：如何处理消息？
+A5：结合前面图片的结构，处理消息主要分为两部分的操作，首先通过传来的消息根据pattern找到其对应的handle处理函数。然后需要启动这个处理函数，这样子一个完整的服务端就构建完成了。
+2 客户端： 宏观上来看客户端主要是发送请求，这个过程可以抽象为三个子过程：创建请求、获取连接、通过tcp连接进行收发。
+2.1 创建请求：
+在面向对象的编程思想下，请求应该也是一个对象，所以第一步应该是将对应请求url和body等内容打包成一个请求结构体的实例。
+2.2 获取连接：
+请求要成功发起需要尝试与服务端建立连接，这里需要注意连接也是一种非常宝贵的资源因此需要尽可能复用而非申请。在这个过程中会有一个tcp连接池，尝试申请连接就是在tcp池中寻找可用连接。
+这个过程中会发起判断，如果有可以复用的连接比如目标服务端和内容均相同判则复用连接，如果没有则申请新的连接。
+2.3 通过tcp连接进行收发：
+建立连接后就可以执行发送请求和接收响应过程，此处会有两个goroutine来负责实现这两个功能并且通过channel进行通信。
+以下为客户端和服务端总体宏观流程的思维导图 源码分析 1 服务端 1.1 核心数据结构 以下主要先熟悉客户端部分的主要数据结构，以便下一部分介绍代码逻辑时可以更好理解。
+Server:
+type Server struct { // 监听地址 Addr string // 请求多路复用器（路由处理器） Handler Handler // handler to invoke, http." />
+  <meta name="author" content="YOUR_NAME" />
+  
+
+  
+  
+  
+  
+  
+  
+  <link rel="preload stylesheet" as="style" href="https://luuuweiii.github.io/main.min.css" />
+
+  
+  <script
+    defer
+    src="https://luuuweiii.github.io/highlight.min.js"
+    onload="hljs.initHighlightingOnLoad();"
+  ></script>
+  
+
+  
+   
+  <link rel="preload" as="image" href="https://luuuweiii.github.io/theme.png" />
+
+  
+  
+  
+  <link rel="preload" as="image" href="https://www.gravatar.com/avatar/6fd8df4abe41f17fd8e2dd7d97b5cc8c?s=160&amp;d=identicon" />
+  
+  
+
+  
+  <link rel="preload" as="image" href="https://luuuweiii.github.io/github.svg" />
+  
+  <link rel="preload" as="image" href="https://luuuweiii.github.io/rss.svg" />
+  
+  
+
+  
+  
+
+  
+  <link rel="icon" href="https://luuuweiii.github.io/favicon.ico" />
+  <link rel="apple-touch-icon" href="https://luuuweiii.github.io/apple-touch-icon.png" />
+
+  
+  <meta name="generator" content="Hugo 0.118.2">
+
+  
+  
+
+  
+  
+  
+  
+  
+  <meta itemprop="name" content="Go HTTP框架原理从零开始到还不错">
+<meta itemprop="description" content="Go 原生HTTP框架解读 HTTP（Hypertext Transfer Protocol）框架作为网络编程的重要工具是众多初学者第一次接触的网络框架，同时Go语言也做了十分优秀的原生支持使得在不引入第三方库的情况下可以用简单的几行代码完成服务端与客户端的搭建工作。在学习过程中，我会非常好奇这些简单命令背后发生的事情，但是深入钻研源码又是一件十分痛苦的事情。
+因此本文系统通过宏观地介绍HTTP框架工作原理，同时辅以必要的源码，一来可以一定程度加深对于网络实现原理的理解，二来阅读官方的代码一定是培养编程习惯养成编程风格最好的途径。
+文章描写较为基础且啰嗦，基于我的书写风格也基于我较低的水平欢迎指正和讨论。 宏观理解 HTTP遵循经典的C-S架构，即服务端(Serve)和客户端(Client)之间通过发起请求与回复进行通信。当然也可以是BS架构，这个在之后讨论。那么我们便可以将服务端和客户端分开来讨论和理解。最后会以思维导图的形式更加清晰地展示这个过程。
+1 服务端: 服务端通常搭建在远程服务器上，我们日常会通过浏览器通过输入网址与服务端进行交互，服务端会返回包含各式各样信息的网页。我们可以将服务端的功能抽象为两步，一是构建服务，二是启动服务。
+1.1 构建服务：
+Q1：我们会自然地发问需要构建一个什么样子的服务呢？
+A1：或许我们可以从日常浏览一个网页形成一个比较具体的理解。比如我们浏览某购物网站，这个网站的首页一定有各种不同的按钮，这些按钮点击后都会产生不同的效果。如果将这些效果抽象为一个个函数Func，那么我们就是要构建一个服务，里面有很多的功能函数并且有其对应的入口，他们构成一一对应的关系。
+如下图，我们可以发现不同的按钮点击后对应的网址是不同的。
+由此我们可以更抽象地描述这个服务具由很多网址或者说是路径(pattern)和处理函数(handler) 的键值对构成。 我们或许可以想到这么多的键值对应该由一个容器统一存储，并且有一个调度器来统一管理。
+Q2：这个容器是什么呢？
+A2：前面提到了存放的是键值对，那么可以自然地想到可以用一个map保存pattern-handle的键值对。
+这个调度器我们称之为路由处理器，或者是HTTP多路复用器，因为众多不同的HTTP请求都经过它来匹配对应的函数。
+Q3：什么是路由呢？
+A3：路由是指网络设备通过网络将信息正确传输到指定目的地的方式，简单来说就是对于传入服务端的信息通过一定的方法找到他应该正确去往的地方，在目前这个具体情况里面就是找到地址对应的处理函数。同时路由管理器还会实现前缀匹配等众多功能，也可以自定义特殊的功能，这一部分后面结合具体源码详细描述。
+1.2 启动服务：
+启动服务换句话来说就是要实现客户端发来的消息服务端可以接受并处理。
+因此可以启动服务转化为两个问题：如何接受消息和如何处理消息。
+Q4:如何接受消息？
+A4：接收消息无非便是用一个For循环不断地监听是否有消息传入，不过此处框架通过被动阻塞的方式防止For循环一直空转长期占用cpu的时间片。同时还使用了一个多路复用的技术，这部分结合代码解释。 Q5：如何处理消息？
+A5：结合前面图片的结构，处理消息主要分为两部分的操作，首先通过传来的消息根据pattern找到其对应的handle处理函数。然后需要启动这个处理函数，这样子一个完整的服务端就构建完成了。
+2 客户端： 宏观上来看客户端主要是发送请求，这个过程可以抽象为三个子过程：创建请求、获取连接、通过tcp连接进行收发。
+2.1 创建请求：
+在面向对象的编程思想下，请求应该也是一个对象，所以第一步应该是将对应请求url和body等内容打包成一个请求结构体的实例。
+2.2 获取连接：
+请求要成功发起需要尝试与服务端建立连接，这里需要注意连接也是一种非常宝贵的资源因此需要尽可能复用而非申请。在这个过程中会有一个tcp连接池，尝试申请连接就是在tcp池中寻找可用连接。
+这个过程中会发起判断，如果有可以复用的连接比如目标服务端和内容均相同判则复用连接，如果没有则申请新的连接。
+2.3 通过tcp连接进行收发：
+建立连接后就可以执行发送请求和接收响应过程，此处会有两个goroutine来负责实现这两个功能并且通过channel进行通信。
+以下为客户端和服务端总体宏观流程的思维导图 源码分析 1 服务端 1.1 核心数据结构 以下主要先熟悉客户端部分的主要数据结构，以便下一部分介绍代码逻辑时可以更好理解。
+Server:
+type Server struct { // 监听地址 Addr string // 请求多路复用器（路由处理器） Handler Handler // handler to invoke, http."><meta itemprop="datePublished" content="2023-09-15T16:50:55+08:00" />
+<meta itemprop="dateModified" content="2023-09-15T16:50:55+08:00" />
+<meta itemprop="wordCount" content="1438">
+<meta itemprop="keywords" content="" />
+  
+  <meta name="twitter:card" content="summary"/>
+<meta name="twitter:title" content="Go HTTP框架原理从零开始到还不错"/>
+<meta name="twitter:description" content="Go 原生HTTP框架解读 HTTP（Hypertext Transfer Protocol）框架作为网络编程的重要工具是众多初学者第一次接触的网络框架，同时Go语言也做了十分优秀的原生支持使得在不引入第三方库的情况下可以用简单的几行代码完成服务端与客户端的搭建工作。在学习过程中，我会非常好奇这些简单命令背后发生的事情，但是深入钻研源码又是一件十分痛苦的事情。
+因此本文系统通过宏观地介绍HTTP框架工作原理，同时辅以必要的源码，一来可以一定程度加深对于网络实现原理的理解，二来阅读官方的代码一定是培养编程习惯养成编程风格最好的途径。
+文章描写较为基础且啰嗦，基于我的书写风格也基于我较低的水平欢迎指正和讨论。 宏观理解 HTTP遵循经典的C-S架构，即服务端(Serve)和客户端(Client)之间通过发起请求与回复进行通信。当然也可以是BS架构，这个在之后讨论。那么我们便可以将服务端和客户端分开来讨论和理解。最后会以思维导图的形式更加清晰地展示这个过程。
+1 服务端: 服务端通常搭建在远程服务器上，我们日常会通过浏览器通过输入网址与服务端进行交互，服务端会返回包含各式各样信息的网页。我们可以将服务端的功能抽象为两步，一是构建服务，二是启动服务。
+1.1 构建服务：
+Q1：我们会自然地发问需要构建一个什么样子的服务呢？
+A1：或许我们可以从日常浏览一个网页形成一个比较具体的理解。比如我们浏览某购物网站，这个网站的首页一定有各种不同的按钮，这些按钮点击后都会产生不同的效果。如果将这些效果抽象为一个个函数Func，那么我们就是要构建一个服务，里面有很多的功能函数并且有其对应的入口，他们构成一一对应的关系。
+如下图，我们可以发现不同的按钮点击后对应的网址是不同的。
+由此我们可以更抽象地描述这个服务具由很多网址或者说是路径(pattern)和处理函数(handler) 的键值对构成。 我们或许可以想到这么多的键值对应该由一个容器统一存储，并且有一个调度器来统一管理。
+Q2：这个容器是什么呢？
+A2：前面提到了存放的是键值对，那么可以自然地想到可以用一个map保存pattern-handle的键值对。
+这个调度器我们称之为路由处理器，或者是HTTP多路复用器，因为众多不同的HTTP请求都经过它来匹配对应的函数。
+Q3：什么是路由呢？
+A3：路由是指网络设备通过网络将信息正确传输到指定目的地的方式，简单来说就是对于传入服务端的信息通过一定的方法找到他应该正确去往的地方，在目前这个具体情况里面就是找到地址对应的处理函数。同时路由管理器还会实现前缀匹配等众多功能，也可以自定义特殊的功能，这一部分后面结合具体源码详细描述。
+1.2 启动服务：
+启动服务换句话来说就是要实现客户端发来的消息服务端可以接受并处理。
+因此可以启动服务转化为两个问题：如何接受消息和如何处理消息。
+Q4:如何接受消息？
+A4：接收消息无非便是用一个For循环不断地监听是否有消息传入，不过此处框架通过被动阻塞的方式防止For循环一直空转长期占用cpu的时间片。同时还使用了一个多路复用的技术，这部分结合代码解释。 Q5：如何处理消息？
+A5：结合前面图片的结构，处理消息主要分为两部分的操作，首先通过传来的消息根据pattern找到其对应的handle处理函数。然后需要启动这个处理函数，这样子一个完整的服务端就构建完成了。
+2 客户端： 宏观上来看客户端主要是发送请求，这个过程可以抽象为三个子过程：创建请求、获取连接、通过tcp连接进行收发。
+2.1 创建请求：
+在面向对象的编程思想下，请求应该也是一个对象，所以第一步应该是将对应请求url和body等内容打包成一个请求结构体的实例。
+2.2 获取连接：
+请求要成功发起需要尝试与服务端建立连接，这里需要注意连接也是一种非常宝贵的资源因此需要尽可能复用而非申请。在这个过程中会有一个tcp连接池，尝试申请连接就是在tcp池中寻找可用连接。
+这个过程中会发起判断，如果有可以复用的连接比如目标服务端和内容均相同判则复用连接，如果没有则申请新的连接。
+2.3 通过tcp连接进行收发：
+建立连接后就可以执行发送请求和接收响应过程，此处会有两个goroutine来负责实现这两个功能并且通过channel进行通信。
+以下为客户端和服务端总体宏观流程的思维导图 源码分析 1 服务端 1.1 核心数据结构 以下主要先熟悉客户端部分的主要数据结构，以便下一部分介绍代码逻辑时可以更好理解。
+Server:
+type Server struct { // 监听地址 Addr string // 请求多路复用器（路由处理器） Handler Handler // handler to invoke, http."/>
+
+  
+  
+</head>
+
+  <body class="text-black duration-200 ease-out dark:text-white">
+    <header class="mx-auto flex h-[4.5rem] max-w-3xl px-8 lg:justify-center">
+  <div class="relative z-50 mr-auto flex items-center">
+    <a
+      class="-translate-x-[1px] -translate-y-[1px] text-2xl font-semibold"
+      href="https://luuuweiii.github.io/"
+      >Luuuweiii Blog</a
+    >
+    <div
+      class="btn-dark text-[0] ml-4 h-6 w-6 shrink-0 cursor-pointer [background:url(./theme.png)_left_center/_auto_theme('spacing.6')_no-repeat] [transition:_background-position_0.4s_steps(5)] dark:[background-position:right]"
+      role="button"
+      aria-label="Dark"
+    ></div>
+  </div>
+
+  <div
+    class="btn-menu relative z-50 -mr-8 flex h-[4.5rem] w-[5rem] shrink-0 cursor-pointer flex-col items-center justify-center gap-2.5 lg:hidden"
+    role="button"
+    aria-label="Menu"
+  ></div>
+
+  
+  <script>
+    
+    const htmlClass = document.documentElement.classList;
+    setTimeout(() => {
+      htmlClass.remove('not-ready');
+    }, 10);
+
+    
+    const btnMenu = document.querySelector('.btn-menu');
+    btnMenu.addEventListener('click', () => {
+      htmlClass.toggle('open');
+    });
+
+    
+    const metaTheme = document.querySelector('meta[name="theme-color"]');
+    const lightBg = '#faf8f1'.replace(/"/g, '');
+    const setDark = (isDark) => {
+      metaTheme.setAttribute('content', isDark ? '#000' : lightBg);
+      htmlClass[isDark ? 'add' : 'remove']('dark');
+      localStorage.setItem('dark', isDark);
+    };
+
+    
+    const darkScheme = window.matchMedia('(prefers-color-scheme: dark)');
+    if (htmlClass.contains('dark')) {
+      setDark(true);
+    } else {
+      const darkVal = localStorage.getItem('dark');
+      setDark(darkVal ? darkVal === 'true' : darkScheme.matches);
+    }
+
+    
+    darkScheme.addEventListener('change', (event) => {
+      setDark(event.matches);
+    });
+
+    
+    const btnDark = document.querySelector('.btn-dark');
+    btnDark.addEventListener('click', () => {
+      setDark(localStorage.getItem('dark') !== 'true');
+    });
+  </script>
+
+  <div
+    class="nav-wrapper fixed inset-x-0 top-full z-40 flex h-full select-none flex-col justify-center pb-16 duration-200 dark:bg-black lg:static lg:h-auto lg:flex-row lg:!bg-transparent lg:pb-0 lg:transition-none"
+  >
+    
+    
+
+    
+    <nav
+      class="mt-12 flex justify-center space-x-10 dark:invert lg:ml-12 lg:mt-0 lg:items-center lg:space-x-6"
+    >
+      
+      <a
+        class="h-8 w-8 text-[0] [background:var(--url)_center_center/cover_no-repeat] lg:h-6 lg:w-6"
+        style="--url: url(./github.svg)"
+        href="https://github.com/luuuweiii"
+        target="_blank"
+        rel="me"
+      >
+        github
+      </a>
+      
+      <a
+        class="h-8 w-8 text-[0] [background:var(--url)_center_center/cover_no-repeat] lg:h-6 lg:w-6"
+        style="--url: url(./rss.svg)"
+        href="https://luuuweiii.github.io/index.xml"
+        target="_blank"
+        rel="alternate"
+      >
+        rss
+      </a>
+      
+    </nav>
+    
+  </div>
+</header>
+
+
+    <main
+      class="prose prose-neutral relative mx-auto min-h-[calc(100%-9rem)] max-w-3xl px-8 pb-16 pt-12 dark:prose-invert"
+    >
+      
+
+<article>
+  <header class="mb-16">
+    <h1 class="!my-0 pb-2.5">Go HTTP框架原理从零开始到还不错</h1>
+
+    
+    <div class="text-sm antialiased opacity-60">
+      
+      <time>Sep 15, 2023</time>
+      
+      
+      
+      
+    </div>
+    
+  </header>
+
+  <section><h2 id="go-原生http框架解读">Go 原生HTTP框架解读</h2>
+<ul>
+<li><strong>HTTP（Hypertext Transfer Protocol）框架</strong>作为网络编程的重要工具是众多初学者第一次接触的网络框架，同时Go语言也做了十分优秀的原生支持使得在不引入第三方库的情况下可以用简单的几行代码完成服务端与客户端的搭建工作。在学习过程中，我会非常好奇这些简单命令背后发生的事情，但是深入钻研源码又是一件十分痛苦的事情。<br>
+因此本文系统通过<strong>宏观地介绍HTTP框架工作原理，同时辅以必要的源码</strong>，一来可以一定程度加深对于网络实现原理的理解，二来阅读官方的代码一定是培养编程习惯养成编程风格最好的途径。<br>
+文章描写较为基础且啰嗦，基于我的书写风格也基于我较低的水平欢迎指正和讨论。</li>
+</ul>
+<h2 id="宏观理解">宏观理解</h2>
+<p>HTTP遵循经典的C-S架构，即服务端(Serve)和客户端(Client)之间通过发起请求与回复进行通信。当然也可以是BS架构，这个在之后讨论。那么我们便可以将服务端和客户端分开来讨论和理解。最后会以<strong>思维导图</strong>的形式更加清晰地展示这个过程。</p>
+<h2 id="1-服务端">1 服务端:</h2>
+<p>服务端通常搭建在远程服务器上，我们日常会通过浏览器通过输入网址与服务端进行交互，服务端会返回包含各式各样信息的网页。我们可以将服务端的功能抽象为两步，一是构建服务，二是启动服务。<br>
+<strong>1.1 构建服务：</strong><br>
+Q1：我们会自然地发问需要构建一个什么样子的服务呢？<br>
+A1：或许我们可以从日常浏览一个网页形成一个比较具体的理解。比如我们浏览某购物网站，这个网站的首页一定有各种不同的按钮，这些按钮点击后都会产生不同的效果。如果将这些效果抽象为一个个函数Func，那么我们就是要构建一个服务，里面有很多的功能函数并且有其对应的入口，他们构成一一对应的关系。<br>
+如下图，我们可以发现不同的按钮点击后对应的网址是不同的。<br>
+由此我们可以更抽象地描述这个服务具由很多网址或者说是<strong>路径(pattern)和处理函数(handler)</strong> 的键值对构成。
+<img src="https://p6-juejin.byteimg.com/tos-cn-i-k3u1fbpfcp/d14407655bc04e55b7c4c06d970ed10a~tplv-k3u1fbpfcp-watermark.image?" alt="image.png">
+<img src="https://p6-juejin.byteimg.com/tos-cn-i-k3u1fbpfcp/7c25cae26f9447fdbfd6a5d092a733c9~tplv-k3u1fbpfcp-watermark.image?" alt="image.png"></p>
+<p>我们或许可以想到这么多的键值对应该由一个容器统一存储，并且有一个调度器来统一管理。<br>
+Q2：这个<strong>容器</strong>是什么呢？<br>
+A2：前面提到了存放的是键值对，那么可以自然地想到可以用一个<strong>map</strong>保存pattern-handle的键值对。</p>
+<p>这个调度器我们称之为<strong>路由处理器</strong>，或者是HTTP多路复用器，因为众多不同的HTTP请求都经过它来匹配对应的函数。<br>
+Q3：什么是路由呢？<br>
+A3：路由是指网络设备通过网络将信息正确传输到指定目的地的方式，简单来说就是对于传入服务端的信息通过一定的方法找到他应该正确去往的地方，在目前这个具体情况里面就是<strong>找到地址对应的处理函数</strong>。同时路由管理器还会实现前缀匹配等众多功能，也可以自定义特殊的功能，这一部分后面结合具体源码详细描述。</p>
+<p><img src="https://p9-juejin.byteimg.com/tos-cn-i-k3u1fbpfcp/fdb236c56f57465ea47a9ad2eeebee2a~tplv-k3u1fbpfcp-watermark.image?" alt="Handl;er.jpg"></p>
+<p><strong>1.2 启动服务：</strong><br>
+启动服务换句话来说就是要实现客户端发来的消息服务端可以接受并处理。<br>
+因此可以启动服务转化为两个问题：如何<strong>接受消息</strong>和如何<strong>处理消息</strong>。<br>
+Q4:如何接受消息？<br>
+A4：接收消息无非便是用一个<strong>For循环</strong>不断地监听是否有消息传入，不过此处框架通过<strong>被动阻塞</strong>的方式防止For循环一直空转长期占用cpu的时间片。同时还使用了一个多路复用的技术，这部分结合代码解释。 <br>
+Q5：如何处理消息？<br>
+A5：结合前面图片的结构，处理消息主要分为两部分的操作，首先通过传来的消息根据pattern找到其对应的handle处理函数。然后需要启动这个处理函数，这样子一个完整的服务端就构建完成了。</p>
+<h2 id="2-客户端">2 客户端：</h2>
+<p>宏观上来看客户端主要是发送请求，这个过程可以抽象为三个子过程：创建请求、获取连接、通过tcp连接进行收发。<br>
+<strong>2.1 创建请求：</strong><br>
+在面向对象的编程思想下，请求应该也是一个对象，所以第一步应该是将对应请求url和body等内容打包成一个请求结构体的实例。<br>
+<strong>2.2 获取连接：</strong><br>
+请求要成功发起需要尝试与服务端建立连接，这里需要注意连接也是一种非常宝贵的资源因此需要尽可能复用而非申请。在这个过程中会有一个tcp连接池，尝试申请连接就是在tcp池中寻找可用连接。<br>
+这个过程中会发起判断，如果有可以复用的连接比如目标服务端和内容均相同判则复用连接，如果没有则申请新的连接。<br>
+<strong>2.3 通过tcp连接进行收发：</strong><br>
+建立连接后就可以执行发送请求和接收响应过程，此处会有两个goroutine来负责实现这两个功能并且通过channel进行通信。</p>
+<p>以下为客户端和服务端总体宏观流程的思维导图
+<img src="https://p3-juejin.byteimg.com/tos-cn-i-k3u1fbpfcp/e0ff35317c78466394b534bcc13298d4~tplv-k3u1fbpfcp-watermark.image?" alt="HTTP实现流程.png"></p>
+<h2 id="源码分析">源码分析</h2>
+<h2 id="1-服务端-1">1 服务端</h2>
+<h4 id="11-核心数据结构"><strong>1.1 核心数据结构</strong></h4>
+<p>以下主要先熟悉客户端部分的主要数据结构，以便下一部分介绍代码逻辑时可以更好理解。<br>
+<strong>Server:</strong></p>
+<div class="highlight"><pre tabindex="0" style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4;"><code class="language-Go" data-lang="Go"><span style="display:flex;"><span><span style="color:#66d9ef">type</span> <span style="color:#a6e22e">Server</span> <span style="color:#66d9ef">struct</span> {  
+</span></span><span style="display:flex;"><span>    <span style="color:#75715e">// 监听地址  
+</span></span></span><span style="display:flex;"><span><span style="color:#75715e"></span>    <span style="color:#a6e22e">Addr</span> <span style="color:#66d9ef">string</span>  
+</span></span><span style="display:flex;"><span>    <span style="color:#75715e">// 请求多路复用器（路由处理器）  
+</span></span></span><span style="display:flex;"><span><span style="color:#75715e"></span>    <span style="color:#a6e22e">Handler</span> <span style="color:#a6e22e">Handler</span> <span style="color:#75715e">// handler to invoke, http.DefaultServeMux if nil  
+</span></span></span><span style="display:flex;"><span><span style="color:#75715e"></span>    <span style="color:#f92672">...</span>  
+</span></span><span style="display:flex;"><span>}
+</span></span></code></pre></div><p><img src="https://p1-juejin.byteimg.com/tos-cn-i-k3u1fbpfcp/64a954725c61406d95348f849bd01d55~tplv-k3u1fbpfcp-watermark.image?" alt="Server.png">
+<strong>Handler:</strong><br>
+Handler就是Server中的参数之一，其对应的数据类型也是服务器部分的一个重要<strong>接口</strong></p>
+<div class="highlight"><pre tabindex="0" style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4;"><code class="language-Go" data-lang="Go"><span style="display:flex;"><span><span style="color:#66d9ef">type</span> <span style="color:#a6e22e">Handler</span> <span style="color:#66d9ef">interface</span> {  
+</span></span><span style="display:flex;"><span>    <span style="color:#a6e22e">ServeHTTP</span>(<span style="color:#a6e22e">ResponseWriter</span>, <span style="color:#f92672">*</span><span style="color:#a6e22e">Request</span>)  
+</span></span><span style="display:flex;"><span>}
+</span></span></code></pre></div><p><img src="https://p6-juejin.byteimg.com/tos-cn-i-k3u1fbpfcp/b8001c930add4583b21dddb40dbbfe14~tplv-k3u1fbpfcp-watermark.image?" alt="Handler.png">
+<strong>ServeMux:</strong><br>
+ServeMux是Handler接口的一个具体实现，实现了<strong>请求多路复用器</strong></p>
+<div class="highlight"><pre tabindex="0" style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4;"><code class="language-Go" data-lang="Go"><span style="display:flex;"><span><span style="color:#66d9ef">type</span> <span style="color:#a6e22e">ServeMux</span> <span style="color:#66d9ef">struct</span> {  
+</span></span><span style="display:flex;"><span>    <span style="color:#a6e22e">mu</span> <span style="color:#a6e22e">sync</span>.<span style="color:#a6e22e">RWMutex</span>  
+</span></span><span style="display:flex;"><span>    <span style="color:#a6e22e">m</span> <span style="color:#66d9ef">map</span>[<span style="color:#66d9ef">string</span>]<span style="color:#a6e22e">muxEntry</span>  
+</span></span><span style="display:flex;"><span>    <span style="color:#a6e22e">es</span> []<span style="color:#a6e22e">muxEntry</span> <span style="color:#75715e">// slice of entries sorted from longest to shortest.  
+</span></span></span><span style="display:flex;"><span><span style="color:#75715e"></span>    <span style="color:#a6e22e">hosts</span> <span style="color:#66d9ef">bool</span> <span style="color:#75715e">// whether any patterns contain hostnames  
+</span></span></span><span style="display:flex;"><span><span style="color:#75715e"></span>}
+</span></span></code></pre></div><p><img src="https://p3-juejin.byteimg.com/tos-cn-i-k3u1fbpfcp/1b7d4b78a91a43e5907e514d1b2c25fc~tplv-k3u1fbpfcp-watermark.image?" alt="SeveMux.png">
+<strong>muxEntry:</strong><br>
+muxEntry也是Handler接口的一个具体实现，表示了一个url和其对应的<strong>处理函数</strong></p>
+<div class="highlight"><pre tabindex="0" style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4;"><code class="language-Go" data-lang="Go"><span style="display:flex;"><span><span style="color:#66d9ef">type</span> <span style="color:#a6e22e">muxEntry</span> <span style="color:#66d9ef">struct</span> {  
+</span></span><span style="display:flex;"><span>    <span style="color:#a6e22e">h</span> <span style="color:#a6e22e">Handler</span>  
+</span></span><span style="display:flex;"><span>    <span style="color:#a6e22e">pattern</span> <span style="color:#66d9ef">string</span>  
+</span></span><span style="display:flex;"><span>}
+</span></span></code></pre></div><p><img src="https://p9-juejin.byteimg.com/tos-cn-i-k3u1fbpfcp/ba1511bf30bc444ca95f0375bccb6130~tplv-k3u1fbpfcp-watermark.image?" alt="muxentry.png"></p>
+<p>在这之前要再次明确一下<strong>Handler HTTP多路复用器 路由处理器 handler 处理函数之间的区别</strong><br>
+Handler = HTTP多路复用器 = 路由处理器<br>
+handler = 处理函数<br>
+这里区分大小写是因为在代码中通常Handler对应的是多路复用器，小写则是处理函数，因此以此区分。</p>
+<h4 id="12-服务端注册处理函数handler流程"><strong>1.2 服务端注册处理函数（handler）流程</strong></h4>
+<p>前文中已经提到了服务端的构造分为了创建服务和启动服务两个部分，此处首先介绍创建服务的过程。结合宏观部分的解释和对于数据结构的理解，我们可以发现服务创建的过程主要是<strong>需要定义Handler</strong>，其中包括了路由处理器以及处理函数。</p>
+<ol>
+<li>
+<p>关于路由处理器<br>
+Go语言官方提供的HTTP框架中创建服务端时路由处理器可以为空，因为框架提供了一个默认的全局单例DefaultServeMux供我们使用。单例指的是这是有且只有这么一个实例，简单来说就是该数据结构只申明了一个变量。</p>
+</li>
+<li>
+<p>关于处理函数<br>
+服务端的构建主要是完成对于处理函数的定义，创建服务端时我们需要声明很多的处理函数，并将其组织并进行管理。该过程主要调用了以下函数HandleFunc,需要注意的是HandleFunc是使用上文提到的全局单例DefaultServeMux来构建服务端的：</p>
+</li>
+</ol>
+<div class="highlight"><pre tabindex="0" style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4;"><code class="language-Go" data-lang="Go"><span style="display:flex;"><span><span style="color:#66d9ef">func</span> <span style="color:#a6e22e">HandleFunc</span>(<span style="color:#a6e22e">pattern</span> <span style="color:#66d9ef">string</span>, <span style="color:#a6e22e">handler</span> <span style="color:#66d9ef">func</span>(<span style="color:#a6e22e">ResponseWriter</span>, <span style="color:#f92672">*</span><span style="color:#a6e22e">Request</span>)) {  
+</span></span><span style="display:flex;"><span>    <span style="color:#a6e22e">DefaultServeMux</span>.<span style="color:#a6e22e">HandleFunc</span>(<span style="color:#a6e22e">pattern</span>, <span style="color:#a6e22e">handler</span>)  
+</span></span><span style="display:flex;"><span>}
+</span></span></code></pre></div><p>该函数的使用可以使用以下形式调用：</p>
+<div class="highlight"><pre tabindex="0" style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4;"><code class="language-Go" data-lang="Go"><span style="display:flex;"><span><span style="color:#a6e22e">http</span>.<span style="color:#a6e22e">HandleFunc</span>(<span style="color:#e6db74">&#34;/ping&#34;</span>, <span style="color:#66d9ef">func</span>(<span style="color:#a6e22e">w</span> <span style="color:#a6e22e">http</span>.<span style="color:#a6e22e">ResponseWriter</span>, <span style="color:#a6e22e">r</span> <span style="color:#f92672">*</span><span style="color:#a6e22e">http</span>.<span style="color:#a6e22e">Request</span>) {  
+</span></span><span style="display:flex;"><span>    <span style="color:#a6e22e">fmt</span>.<span style="color:#a6e22e">Println</span>(<span style="color:#e6db74">&#34;req:ping&#34;</span>)  
+</span></span><span style="display:flex;"><span>    <span style="color:#a6e22e">w</span>.<span style="color:#a6e22e">Write</span>([]byte(<span style="color:#e6db74">&#34;pone&#34;</span>))  
+</span></span><span style="display:flex;"><span>})
+</span></span></code></pre></div><p>以下为DefaultServeMux的定义：</p>
+<div class="highlight"><pre tabindex="0" style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4;"><code class="language-Go" data-lang="Go"><span style="display:flex;"><span><span style="color:#75715e">// DefaultServeMux is the default ServeMux used by Serve.  
+</span></span></span><span style="display:flex;"><span><span style="color:#75715e"></span><span style="color:#66d9ef">var</span> <span style="color:#a6e22e">DefaultServeMux</span> = <span style="color:#f92672">&amp;</span><span style="color:#a6e22e">defaultServeMux</span>  
+</span></span><span style="display:flex;"><span>  
+</span></span><span style="display:flex;"><span><span style="color:#66d9ef">var</span> <span style="color:#a6e22e">defaultServeMux</span> <span style="color:#a6e22e">ServeMux</span>
+</span></span></code></pre></div><p>我们可以发现<strong>defaultServeMux</strong>是上文核心数据结构部分提到过的ServeMux类型，这是<strong>Handler接口的一个具体实现</strong>，起到了路由处理器的作用。<br>
+调用HandlerFunc的过程传入了一个路径和一个函数，这里可以比较一个<strong>传入的函数</strong>和<strong>Handler接口定义里的函数</strong>，可以两者传入的参数是一致的。以此也可以验证路由处理器和我们传入的处理函数是一个接口的两种实现形式。<br>
+以下继续观察http.HandleFunc函数内部调用的<strong>DefaultServeMux.HandleFunc</strong>函数，DefaultServeMux是ServeMux类型的变量，因此我们可以在ServeMux这个类型的方法中寻找到HandleFunc函数：</p>
+<div class="highlight"><pre tabindex="0" style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4;"><code class="language-Go" data-lang="Go"><span style="display:flex;"><span><span style="color:#75715e">// HandleFunc registers the handler function for the given pattern.  
+</span></span></span><span style="display:flex;"><span><span style="color:#75715e"></span><span style="color:#66d9ef">func</span> (<span style="color:#a6e22e">mux</span> <span style="color:#f92672">*</span><span style="color:#a6e22e">ServeMux</span>) <span style="color:#a6e22e">HandleFunc</span>(<span style="color:#a6e22e">pattern</span> <span style="color:#66d9ef">string</span>, <span style="color:#a6e22e">handler</span> <span style="color:#66d9ef">func</span>(<span style="color:#a6e22e">ResponseWriter</span>, <span style="color:#f92672">*</span><span style="color:#a6e22e">Request</span>)) {  
+</span></span><span style="display:flex;"><span>    <span style="color:#66d9ef">if</span> <span style="color:#a6e22e">handler</span> <span style="color:#f92672">==</span> <span style="color:#66d9ef">nil</span> {  
+</span></span><span style="display:flex;"><span>        panic(<span style="color:#e6db74">&#34;http: nil handler&#34;</span>)  
+</span></span><span style="display:flex;"><span>    }  
+</span></span><span style="display:flex;"><span>    <span style="color:#a6e22e">mux</span>.<span style="color:#a6e22e">Handle</span>(<span style="color:#a6e22e">pattern</span>, <span style="color:#a6e22e">HandlerFunc</span>(<span style="color:#a6e22e">handler</span>))  
+</span></span><span style="display:flex;"><span>}
+</span></span></code></pre></div><p>该函数对输入的函数进行了一个简单的检查，然后继续将参数向下传递。不过我们可以注意到传递的过程中对handler做了一个<strong>类型转换</strong>，这个类型转换过程可以看一下下面这部分的代码：</p>
+<div class="highlight"><pre tabindex="0" style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4;"><code class="language-Go" data-lang="Go"><span style="display:flex;"><span><span style="color:#66d9ef">type</span> <span style="color:#a6e22e">HandlerFunc</span> <span style="color:#66d9ef">func</span>(<span style="color:#a6e22e">ResponseWriter</span>, <span style="color:#f92672">*</span><span style="color:#a6e22e">Request</span>)  
+</span></span><span style="display:flex;"><span>  
+</span></span><span style="display:flex;"><span><span style="color:#75715e">// ServeHTTP calls f(w, r).  
+</span></span></span><span style="display:flex;"><span><span style="color:#75715e"></span><span style="color:#66d9ef">func</span> (<span style="color:#a6e22e">f</span> <span style="color:#a6e22e">HandlerFunc</span>) <span style="color:#a6e22e">ServeHTTP</span>(<span style="color:#a6e22e">w</span> <span style="color:#a6e22e">ResponseWriter</span>, <span style="color:#a6e22e">r</span> <span style="color:#f92672">*</span><span style="color:#a6e22e">Request</span>) {  
+</span></span><span style="display:flex;"><span>    <span style="color:#a6e22e">f</span>(<span style="color:#a6e22e">w</span>, <span style="color:#a6e22e">r</span>)  
+</span></span><span style="display:flex;"><span>}
+</span></span></code></pre></div><p>上面这段代码主要实现了一个函数对于自己的调用，看起来好像什么都没做，输入的函数需要经过这样的一个处理才可以变成Handler接口的一个实现。这里声明了HandleFunc的类型，其实就是func(ResponseWriter, *Request)类型的别名。下面是HandleFunc类型的一个方法，使得这个函数可以调用自己。这一部分可以和上文的接口定义相互对应。<br>
+这一部分理解了之后再回到<strong>ServeMux.HandleFunc函数</strong>中最后是调用了<strong>ServeMux.Handle函数</strong>，这个函数实现了处理函数加入路由处理器的主要逻辑：</p>
+<div class="highlight"><pre tabindex="0" style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4;"><code class="language-Go" data-lang="Go"><span style="display:flex;"><span><span style="color:#75715e">// Handle registers the handler for the given pattern.  
+</span></span></span><span style="display:flex;"><span><span style="color:#75715e">// If a handler already exists for pattern, Handle panics.  
+</span></span></span><span style="display:flex;"><span><span style="color:#75715e"></span><span style="color:#66d9ef">func</span> (<span style="color:#a6e22e">mux</span> <span style="color:#f92672">*</span><span style="color:#a6e22e">ServeMux</span>) <span style="color:#a6e22e">Handle</span>(<span style="color:#a6e22e">pattern</span> <span style="color:#66d9ef">string</span>, <span style="color:#a6e22e">handler</span> <span style="color:#a6e22e">Handler</span>) {  
+</span></span><span style="display:flex;"><span>    <span style="color:#a6e22e">mux</span>.<span style="color:#a6e22e">mu</span>.<span style="color:#a6e22e">Lock</span>()  
+</span></span><span style="display:flex;"><span>    <span style="color:#66d9ef">defer</span> <span style="color:#a6e22e">mux</span>.<span style="color:#a6e22e">mu</span>.<span style="color:#a6e22e">Unlock</span>()  
+</span></span><span style="display:flex;"><span>  
+</span></span><span style="display:flex;"><span>    <span style="color:#f92672">...</span>
+</span></span><span style="display:flex;"><span>    <span style="color:#66d9ef">if</span> <span style="color:#a6e22e">mux</span>.<span style="color:#a6e22e">m</span> <span style="color:#f92672">==</span> <span style="color:#66d9ef">nil</span> {  
+</span></span><span style="display:flex;"><span>        <span style="color:#a6e22e">mux</span>.<span style="color:#a6e22e">m</span> = make(<span style="color:#66d9ef">map</span>[<span style="color:#66d9ef">string</span>]<span style="color:#a6e22e">muxEntry</span>)  
+</span></span><span style="display:flex;"><span>    }
+</span></span><span style="display:flex;"><span>    <span style="color:#a6e22e">e</span> <span style="color:#f92672">:=</span> <span style="color:#a6e22e">muxEntry</span>{<span style="color:#a6e22e">h</span>: <span style="color:#a6e22e">handler</span>, <span style="color:#a6e22e">pattern</span>: <span style="color:#a6e22e">pattern</span>}  
+</span></span><span style="display:flex;"><span>    <span style="color:#a6e22e">mux</span>.<span style="color:#a6e22e">m</span>[<span style="color:#a6e22e">pattern</span>] = <span style="color:#a6e22e">e</span>  
+</span></span><span style="display:flex;"><span>    <span style="color:#66d9ef">if</span> <span style="color:#a6e22e">pattern</span>[len(<span style="color:#a6e22e">pattern</span>)<span style="color:#f92672">-</span><span style="color:#ae81ff">1</span>] <span style="color:#f92672">==</span> <span style="color:#e6db74">&#39;/&#39;</span> {  
+</span></span><span style="display:flex;"><span>        <span style="color:#a6e22e">mux</span>.<span style="color:#a6e22e">es</span> = <span style="color:#a6e22e">appendSorted</span>(<span style="color:#a6e22e">mux</span>.<span style="color:#a6e22e">es</span>, <span style="color:#a6e22e">e</span>)  
+</span></span><span style="display:flex;"><span>    }  
+</span></span><span style="display:flex;"><span>  
+</span></span><span style="display:flex;"><span>    <span style="color:#66d9ef">if</span> <span style="color:#a6e22e">pattern</span>[<span style="color:#ae81ff">0</span>] <span style="color:#f92672">!=</span> <span style="color:#e6db74">&#39;/&#39;</span> {  
+</span></span><span style="display:flex;"><span>        <span style="color:#a6e22e">mux</span>.<span style="color:#a6e22e">hosts</span> = <span style="color:#66d9ef">true</span>  
+</span></span><span style="display:flex;"><span>    }  
+</span></span><span style="display:flex;"><span>}
+</span></span></code></pre></div><p>首先看到前两行，使用到了ServeMux.mu这个参数，可以回顾数据结构部分这个参数是一个<strong>读写锁</strong>，因为每个ServeMux有一个map用来管理所有的处理函数，这个map的读写是需要进行互斥操作的，以防止对于处理函数的管理出现问题。因此前两行的主要逻辑功能是对map加锁和最后的解锁操作。<br>
+中间省略对于输入参数的是否存在的判断，以及此路径（pattern）是否已经有对应的函数存在了。<br>
+<strong>第8-10行的if判断：</strong> 如果是这个服务端第一次加入处理函数那需要首先申请一个map。<br>
+<strong>第11行：</strong> 将输入打包成muxEntry类型，可以回顾核心数据结构部分。<br>
+<strong>第12行：</strong> 将处理函数和对应的路径加入到map中。<br>
+<strong>第13-15行：</strong> 这一部分在实现前缀表达式匹配的功能，详细可以继续研究<strong>appendSorted</strong>函数以及搜索Go语言http框架前缀树的实现。大致逻辑是当客户端向服务端发出一个请求时，需要根据路径搜索服务端的map寻找其中哪些路径是请求路径的子序列，并返回一个最长的。因此在服务端添加处理函数时需要从长到短对路径进行一个排序，以方便后续的寻找。<br>
+<strong>以上完成了处理函数的添加过程。</strong></p>
+<h4 id="13-服务端启动server和运行的过程"><strong>1.3 服务端启动server和运行的过程</strong></h4>
+<p>对于已经添加完处理函数的服务端，下面来研究如何启动这个客户端。根据前面宏观部分的理解，服务端启动部分主要分为<strong>如何接受请求</strong>以及<strong>如何处理请求</strong>两个部分。<br>
+Go语言中启动HTTP服务只需要调用ListenAndServe一个函数，函数源码如下：</p>
+<div class="highlight"><pre tabindex="0" style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4;"><code class="language-Go" data-lang="Go"><span style="display:flex;"><span><span style="color:#75715e">// ListenAndServe always returns a non-nil error.  
+</span></span></span><span style="display:flex;"><span><span style="color:#75715e"></span><span style="color:#66d9ef">func</span> <span style="color:#a6e22e">ListenAndServe</span>(<span style="color:#a6e22e">addr</span> <span style="color:#66d9ef">string</span>, <span style="color:#a6e22e">handler</span> <span style="color:#a6e22e">Handler</span>) <span style="color:#66d9ef">error</span> {  
+</span></span><span style="display:flex;"><span>    <span style="color:#a6e22e">server</span> <span style="color:#f92672">:=</span> <span style="color:#f92672">&amp;</span><span style="color:#a6e22e">Server</span>{<span style="color:#a6e22e">Addr</span>: <span style="color:#a6e22e">addr</span>, <span style="color:#a6e22e">Handler</span>: <span style="color:#a6e22e">handler</span>}  
+</span></span><span style="display:flex;"><span>    <span style="color:#66d9ef">return</span> <span style="color:#a6e22e">server</span>.<span style="color:#a6e22e">ListenAndServe</span>()  
+</span></span><span style="display:flex;"><span>}
+</span></span></code></pre></div><p>可以如下使用：</p>
+<div class="highlight"><pre tabindex="0" style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4;"><code class="language-Go" data-lang="Go"><span style="display:flex;"><span><span style="color:#a6e22e">http</span>.<span style="color:#a6e22e">ListenAndServe</span>(<span style="color:#e6db74">&#34;:8080&#34;</span>, <span style="color:#66d9ef">nil</span>)
+</span></span></code></pre></div><p>只需要输入一个监听地址和一个路由处理器（Handler），此处使用nil便会自动调用上文中提到的全局单例。可以看到源码中是先将输入整合成了一个Server类型，上文提到过的数据结构，然后调用了Server.ListenAndServe函数：</p>
+<div class="highlight"><pre tabindex="0" style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4;"><code class="language-Go" data-lang="Go"><span style="display:flex;"><span><span style="color:#75715e">// ListenAndServe always returns a non-nil error. After Shutdown or Close,  
+</span></span></span><span style="display:flex;"><span><span style="color:#75715e">// the returned error is ErrServerClosed.
+</span></span></span><span style="display:flex;"><span><span style="color:#75715e"></span><span style="color:#66d9ef">func</span> (<span style="color:#a6e22e">srv</span> <span style="color:#f92672">*</span><span style="color:#a6e22e">Server</span>) <span style="color:#a6e22e">ListenAndServe</span>() <span style="color:#66d9ef">error</span> {  
+</span></span><span style="display:flex;"><span>    <span style="color:#66d9ef">if</span> <span style="color:#a6e22e">srv</span>.<span style="color:#a6e22e">shuttingDown</span>() {  
+</span></span><span style="display:flex;"><span>        <span style="color:#66d9ef">return</span> <span style="color:#a6e22e">ErrServerClosed</span>  
+</span></span><span style="display:flex;"><span>    }  
+</span></span><span style="display:flex;"><span>    <span style="color:#a6e22e">addr</span> <span style="color:#f92672">:=</span> <span style="color:#a6e22e">srv</span>.<span style="color:#a6e22e">Addr</span>  
+</span></span><span style="display:flex;"><span>    <span style="color:#66d9ef">if</span> <span style="color:#a6e22e">addr</span> <span style="color:#f92672">==</span> <span style="color:#e6db74">&#34;&#34;</span> {  
+</span></span><span style="display:flex;"><span>        <span style="color:#a6e22e">addr</span> = <span style="color:#e6db74">&#34;:http&#34;</span>  
+</span></span><span style="display:flex;"><span>    }  
+</span></span><span style="display:flex;"><span>    <span style="color:#a6e22e">ln</span>, <span style="color:#a6e22e">err</span> <span style="color:#f92672">:=</span> <span style="color:#a6e22e">net</span>.<span style="color:#a6e22e">Listen</span>(<span style="color:#e6db74">&#34;tcp&#34;</span>, <span style="color:#a6e22e">addr</span>)  
+</span></span><span style="display:flex;"><span>    <span style="color:#66d9ef">if</span> <span style="color:#a6e22e">err</span> <span style="color:#f92672">!=</span> <span style="color:#66d9ef">nil</span> {  
+</span></span><span style="display:flex;"><span>        <span style="color:#66d9ef">return</span> <span style="color:#a6e22e">err</span>  
+</span></span><span style="display:flex;"><span>    }  
+</span></span><span style="display:flex;"><span>    <span style="color:#66d9ef">return</span> <span style="color:#a6e22e">srv</span>.<span style="color:#a6e22e">Serve</span>(<span style="color:#a6e22e">ln</span>)  
+</span></span><span style="display:flex;"><span>}
+</span></span></code></pre></div><p>上述代码通过 <strong>ln, err := net.Listen(&ldquo;tcp&rdquo;, addr)</strong> 给服务分配了一个监听器，监听是否有往目标地址发送的信息。结束了资源分配，通过<strong>srv.Serve(ln)</strong> 函数启动服务：</p>
+<div class="highlight"><pre tabindex="0" style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4;"><code class="language-Go" data-lang="Go"><span style="display:flex;"><span><span style="color:#75715e">// Serve always returns a non-nil error and closes l.  
+</span></span></span><span style="display:flex;"><span><span style="color:#75715e">// After Shutdown or Close, the returned error is ErrServerClosed.  
+</span></span></span><span style="display:flex;"><span><span style="color:#75715e"></span><span style="color:#66d9ef">func</span> (<span style="color:#a6e22e">srv</span> <span style="color:#f92672">*</span><span style="color:#a6e22e">Server</span>) <span style="color:#a6e22e">Serve</span>(<span style="color:#a6e22e">l</span> <span style="color:#a6e22e">net</span>.<span style="color:#a6e22e">Listener</span>) <span style="color:#66d9ef">error</span> {  
+</span></span><span style="display:flex;"><span>    <span style="color:#f92672">...</span> 
+</span></span><span style="display:flex;"><span>    <span style="color:#a6e22e">ctx</span> <span style="color:#f92672">:=</span> <span style="color:#a6e22e">context</span>.<span style="color:#a6e22e">WithValue</span>(<span style="color:#a6e22e">baseCtx</span>, <span style="color:#a6e22e">ServerContextKey</span>, <span style="color:#a6e22e">srv</span>)  
+</span></span><span style="display:flex;"><span>    <span style="color:#66d9ef">for</span> {  
+</span></span><span style="display:flex;"><span>        <span style="color:#a6e22e">rw</span>, <span style="color:#a6e22e">err</span> <span style="color:#f92672">:=</span> <span style="color:#a6e22e">l</span>.<span style="color:#a6e22e">Accept</span>()  
+</span></span><span style="display:flex;"><span>        <span style="color:#f92672">...</span> 
+</span></span><span style="display:flex;"><span>        <span style="color:#a6e22e">connCtx</span> <span style="color:#f92672">:=</span> <span style="color:#a6e22e">ctx</span>  
+</span></span><span style="display:flex;"><span>        <span style="color:#f92672">...</span>
+</span></span><span style="display:flex;"><span>        <span style="color:#a6e22e">c</span> <span style="color:#f92672">:=</span> <span style="color:#a6e22e">srv</span>.<span style="color:#a6e22e">newConn</span>(<span style="color:#a6e22e">rw</span>)  
+</span></span><span style="display:flex;"><span>        <span style="color:#f92672">...</span> 
+</span></span><span style="display:flex;"><span>        <span style="color:#66d9ef">go</span> <span style="color:#a6e22e">c</span>.<span style="color:#a6e22e">serve</span>(<span style="color:#a6e22e">connCtx</span>)  
+</span></span><span style="display:flex;"><span>    }  
+</span></span><span style="display:flex;"><span>}
+</span></span></code></pre></div><p>Serve函数主体部分是一个for循环，这个for循环不断轮询解决了服务端<strong>如何接收请求的问题</strong>，当代码运行至循环里<strong>rw, err := l.Accept()</strong> 程序会<strong>被动阻塞</strong>直至有请求到来，这样子可以防止空转空耗cpu的资源。当接收到请求之后<strong>c := srv.newConn(rw)</strong> 会对收到的请求参数做一个封装，然后通过<strong>go c.serve(connCtx)</strong> 开启一个新的协程来负责处理这个请求，以此解决<strong>如何处理请求的问题</strong> ：</p>
+<div class="highlight"><pre tabindex="0" style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4;"><code class="language-Go" data-lang="Go"><span style="display:flex;"><span><span style="color:#75715e">// Serve a new connection.  
+</span></span></span><span style="display:flex;"><span><span style="color:#75715e"></span><span style="color:#66d9ef">func</span> (<span style="color:#a6e22e">c</span> <span style="color:#f92672">*</span><span style="color:#a6e22e">conn</span>) <span style="color:#a6e22e">serve</span>(<span style="color:#a6e22e">ctx</span> <span style="color:#a6e22e">context</span>.<span style="color:#a6e22e">Context</span>) {
+</span></span><span style="display:flex;"><span>    <span style="color:#f92672">...</span>
+</span></span><span style="display:flex;"><span>    <span style="color:#a6e22e">c</span>.<span style="color:#a6e22e">r</span> = <span style="color:#f92672">&amp;</span><span style="color:#a6e22e">connReader</span>{<span style="color:#a6e22e">conn</span>: <span style="color:#a6e22e">c</span>}  
+</span></span><span style="display:flex;"><span>    <span style="color:#a6e22e">c</span>.<span style="color:#a6e22e">bufr</span> = <span style="color:#a6e22e">newBufioReader</span>(<span style="color:#a6e22e">c</span>.<span style="color:#a6e22e">r</span>)  
+</span></span><span style="display:flex;"><span>    <span style="color:#a6e22e">c</span>.<span style="color:#a6e22e">bufw</span> = <span style="color:#a6e22e">newBufioWriterSize</span>(<span style="color:#a6e22e">checkConnErrorWriter</span>{<span style="color:#a6e22e">c</span>}, <span style="color:#ae81ff">4</span><span style="color:#f92672">&lt;&lt;</span><span style="color:#ae81ff">10</span>)
+</span></span><span style="display:flex;"><span>    <span style="color:#66d9ef">for</span> {  
+</span></span><span style="display:flex;"><span>        <span style="color:#a6e22e">w</span>, <span style="color:#a6e22e">err</span> <span style="color:#f92672">:=</span> <span style="color:#a6e22e">c</span>.<span style="color:#a6e22e">readRequest</span>(<span style="color:#a6e22e">ctx</span>)
+</span></span><span style="display:flex;"><span>        <span style="color:#f92672">...</span>
+</span></span><span style="display:flex;"><span>        <span style="color:#a6e22e">serverHandler</span>{<span style="color:#a6e22e">c</span>.<span style="color:#a6e22e">server</span>}.<span style="color:#a6e22e">ServeHTTP</span>(<span style="color:#a6e22e">w</span>, <span style="color:#a6e22e">w</span>.<span style="color:#a6e22e">req</span>)  
+</span></span><span style="display:flex;"><span>        <span style="color:#a6e22e">w</span>.<span style="color:#a6e22e">cancelCtx</span>()
+</span></span><span style="display:flex;"><span>        <span style="color:#f92672">...</span>
+</span></span><span style="display:flex;"><span>    }
+</span></span><span style="display:flex;"><span>}       
+</span></span></code></pre></div><p>这部分代码<strong>c.r = &amp;connReader{conn: c}</strong> 通过ctx把Request请求读出，这里看的时候可能会疑惑为什么这里还存在一个for循环，这里是因为一次HTTP的连接请求可能会发送多次，以至达成某种条件结束连接。这里可以自行搜索一下<strong>HTTP/1.x</strong>和<strong>HTTP/2</strong>的区别，同一连接并发处理的区别。<strong>serverHandler{c.server}.ServeHTTP(w, w.req)</strong> 调用方法运行请求对应的处理函数：</p>
+<div class="highlight"><pre tabindex="0" style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4;"><code class="language-Go" data-lang="Go"><span style="display:flex;"><span><span style="color:#66d9ef">func</span> (<span style="color:#a6e22e">sh</span> <span style="color:#a6e22e">serverHandler</span>) <span style="color:#a6e22e">ServeHTTP</span>(<span style="color:#a6e22e">rw</span> <span style="color:#a6e22e">ResponseWriter</span>, <span style="color:#a6e22e">req</span> <span style="color:#f92672">*</span><span style="color:#a6e22e">Request</span>) {
+</span></span><span style="display:flex;"><span>    <span style="color:#a6e22e">handler</span> <span style="color:#f92672">:=</span> <span style="color:#a6e22e">sh</span>.<span style="color:#a6e22e">srv</span>.<span style="color:#a6e22e">Handler</span>
+</span></span><span style="display:flex;"><span>    <span style="color:#66d9ef">if</span> <span style="color:#a6e22e">handler</span> <span style="color:#f92672">==</span> <span style="color:#66d9ef">nil</span> {
+</span></span><span style="display:flex;"><span>        <span style="color:#a6e22e">handler</span> = <span style="color:#a6e22e">DefaultServeMux</span>
+</span></span><span style="display:flex;"><span>    }
+</span></span><span style="display:flex;"><span>    <span style="color:#75715e">// ...
+</span></span></span><span style="display:flex;"><span><span style="color:#75715e"></span>    <span style="color:#a6e22e">handler</span>.<span style="color:#a6e22e">ServeHTTP</span>(<span style="color:#a6e22e">rw</span>, <span style="color:#a6e22e">req</span>)
+</span></span><span style="display:flex;"><span>}
+</span></span></code></pre></div><p>要运行处理函数首先要找到路由处理器中管理的处理函数，此处进行判断是否有自定义的路由处理器输入，如果没有则调用我们之前定义过的<strong>DefaultServerMux全局单例</strong> 然后运行<strong>handler.ServeHTTP(rw, req)</strong> 由于框架中有众多重名的方法，需要注意这里调用的是全局单例的ServeHTTP方法，全局单例是一个ServeMux类型的变量，因此需要研究<strong>ServeMux.ServeHTTP</strong> ：</p>
+<div class="highlight"><pre tabindex="0" style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4;"><code class="language-Go" data-lang="Go"><span style="display:flex;"><span><span style="color:#75715e">// ServeHTTP dispatches the request to the handler whose  
+</span></span></span><span style="display:flex;"><span><span style="color:#75715e">// pattern most closely matches the request URL.  
+</span></span></span><span style="display:flex;"><span><span style="color:#75715e"></span><span style="color:#66d9ef">func</span> (<span style="color:#a6e22e">mux</span> <span style="color:#f92672">*</span><span style="color:#a6e22e">ServeMux</span>) <span style="color:#a6e22e">ServeHTTP</span>(<span style="color:#a6e22e">w</span> <span style="color:#a6e22e">ResponseWriter</span>, <span style="color:#a6e22e">r</span> <span style="color:#f92672">*</span><span style="color:#a6e22e">Request</span>) {  
+</span></span><span style="display:flex;"><span>    <span style="color:#66d9ef">if</span> <span style="color:#a6e22e">r</span>.<span style="color:#a6e22e">RequestURI</span> <span style="color:#f92672">==</span> <span style="color:#e6db74">&#34;*&#34;</span> {  
+</span></span><span style="display:flex;"><span>        <span style="color:#66d9ef">if</span> <span style="color:#a6e22e">r</span>.<span style="color:#a6e22e">ProtoAtLeast</span>(<span style="color:#ae81ff">1</span>, <span style="color:#ae81ff">1</span>) {  
+</span></span><span style="display:flex;"><span>            <span style="color:#a6e22e">w</span>.<span style="color:#a6e22e">Header</span>().<span style="color:#a6e22e">Set</span>(<span style="color:#e6db74">&#34;Connection&#34;</span>, <span style="color:#e6db74">&#34;close&#34;</span>)  
+</span></span><span style="display:flex;"><span>        }  
+</span></span><span style="display:flex;"><span>        <span style="color:#a6e22e">w</span>.<span style="color:#a6e22e">WriteHeader</span>(<span style="color:#a6e22e">StatusBadRequest</span>)  
+</span></span><span style="display:flex;"><span>        <span style="color:#66d9ef">return</span>  
+</span></span><span style="display:flex;"><span>    }  
+</span></span><span style="display:flex;"><span>    <span style="color:#a6e22e">h</span>, <span style="color:#a6e22e">_</span> <span style="color:#f92672">:=</span> <span style="color:#a6e22e">mux</span>.<span style="color:#a6e22e">Handler</span>(<span style="color:#a6e22e">r</span>)  
+</span></span><span style="display:flex;"><span>    <span style="color:#a6e22e">h</span>.<span style="color:#a6e22e">ServeHTTP</span>(<span style="color:#a6e22e">w</span>, <span style="color:#a6e22e">r</span>)  
+</span></span><span style="display:flex;"><span>}
+</span></span></code></pre></div><p>这里需要注意函数的最后两句代码，<strong>h, _ := mux.Handler(r)</strong> 在路由处理器内部对于请求路径进行了查询，返回的h就是处理函数，最后调用处理函数。最后来研究一下<strong>mux.Handler</strong>方法是如何实现处理函数的查询的：</p>
+<div class="highlight"><pre tabindex="0" style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4;"><code class="language-Go" data-lang="Go"><span style="display:flex;"><span><span style="color:#66d9ef">func</span> (<span style="color:#a6e22e">mux</span> <span style="color:#f92672">*</span><span style="color:#a6e22e">ServeMux</span>) <span style="color:#a6e22e">Handler</span>(<span style="color:#a6e22e">r</span> <span style="color:#f92672">*</span><span style="color:#a6e22e">Request</span>) (<span style="color:#a6e22e">h</span> <span style="color:#a6e22e">Handler</span>, <span style="color:#a6e22e">pattern</span> <span style="color:#66d9ef">string</span>) {
+</span></span><span style="display:flex;"><span>    <span style="color:#75715e">// ...
+</span></span></span><span style="display:flex;"><span><span style="color:#75715e"></span>    <span style="color:#66d9ef">return</span> <span style="color:#a6e22e">mux</span>.<span style="color:#a6e22e">handler</span>(<span style="color:#a6e22e">host</span>, <span style="color:#a6e22e">r</span>.<span style="color:#a6e22e">URL</span>.<span style="color:#a6e22e">Path</span>)
+</span></span><span style="display:flex;"><span>}
+</span></span><span style="display:flex;"><span>
+</span></span><span style="display:flex;"><span><span style="color:#66d9ef">func</span> (<span style="color:#a6e22e">mux</span> <span style="color:#f92672">*</span><span style="color:#a6e22e">ServeMux</span>) <span style="color:#a6e22e">handler</span>(<span style="color:#a6e22e">host</span>, <span style="color:#a6e22e">path</span> <span style="color:#66d9ef">string</span>) (<span style="color:#a6e22e">h</span> <span style="color:#a6e22e">Handler</span>, <span style="color:#a6e22e">pattern</span> <span style="color:#66d9ef">string</span>) {
+</span></span><span style="display:flex;"><span>    <span style="color:#a6e22e">mux</span>.<span style="color:#a6e22e">mu</span>.<span style="color:#a6e22e">RLock</span>()
+</span></span><span style="display:flex;"><span>    <span style="color:#66d9ef">defer</span> <span style="color:#a6e22e">mux</span>.<span style="color:#a6e22e">mu</span>.<span style="color:#a6e22e">RUnlock</span>()
+</span></span><span style="display:flex;"><span>    
+</span></span><span style="display:flex;"><span>    <span style="color:#75715e">// ...
+</span></span></span><span style="display:flex;"><span><span style="color:#75715e"></span>    <span style="color:#a6e22e">h</span>, <span style="color:#a6e22e">pattern</span> = <span style="color:#a6e22e">mux</span>.<span style="color:#a6e22e">match</span>(<span style="color:#a6e22e">path</span>)
+</span></span><span style="display:flex;"><span>    <span style="color:#75715e">// ...
+</span></span></span><span style="display:flex;"><span><span style="color:#75715e"></span>    <span style="color:#66d9ef">return</span>
+</span></span><span style="display:flex;"><span>}
+</span></span></code></pre></div><p>查询时handler函数首先会添加一个共享锁，此处可以对比前文中注册处理函数时的读写锁学习，以此保护异步读时的安全，最后调用<strong>h, pattern = mux.match(path)</strong> 进行路径匹配：</p>
+<div class="highlight"><pre tabindex="0" style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4;"><code class="language-Go" data-lang="Go"><span style="display:flex;"><span><span style="color:#66d9ef">func</span> (<span style="color:#a6e22e">mux</span> <span style="color:#f92672">*</span><span style="color:#a6e22e">ServeMux</span>) <span style="color:#a6e22e">match</span>(<span style="color:#a6e22e">path</span> <span style="color:#66d9ef">string</span>) (<span style="color:#a6e22e">h</span> <span style="color:#a6e22e">Handler</span>, <span style="color:#a6e22e">pattern</span> <span style="color:#66d9ef">string</span>) {
+</span></span><span style="display:flex;"><span>    <span style="color:#a6e22e">v</span>, <span style="color:#a6e22e">ok</span> <span style="color:#f92672">:=</span> <span style="color:#a6e22e">mux</span>.<span style="color:#a6e22e">m</span>[<span style="color:#a6e22e">path</span>]
+</span></span><span style="display:flex;"><span>    <span style="color:#66d9ef">if</span> <span style="color:#a6e22e">ok</span> {
+</span></span><span style="display:flex;"><span>        <span style="color:#66d9ef">return</span> <span style="color:#a6e22e">v</span>.<span style="color:#a6e22e">h</span>, <span style="color:#a6e22e">v</span>.<span style="color:#a6e22e">pattern</span>
+</span></span><span style="display:flex;"><span>    }
+</span></span><span style="display:flex;"><span>
+</span></span><span style="display:flex;"><span>    <span style="color:#75715e">// ServeMux.es 本身是按照 pattern 的长度由大到小排列的
+</span></span></span><span style="display:flex;"><span><span style="color:#75715e"></span>    <span style="color:#66d9ef">for</span> <span style="color:#a6e22e">_</span>, <span style="color:#a6e22e">e</span> <span style="color:#f92672">:=</span> <span style="color:#66d9ef">range</span> <span style="color:#a6e22e">mux</span>.<span style="color:#a6e22e">es</span> {
+</span></span><span style="display:flex;"><span>        <span style="color:#66d9ef">if</span> <span style="color:#a6e22e">strings</span>.<span style="color:#a6e22e">HasPrefix</span>(<span style="color:#a6e22e">path</span>, <span style="color:#a6e22e">e</span>.<span style="color:#a6e22e">pattern</span>) {
+</span></span><span style="display:flex;"><span>            <span style="color:#66d9ef">return</span> <span style="color:#a6e22e">e</span>.<span style="color:#a6e22e">h</span>, <span style="color:#a6e22e">e</span>.<span style="color:#a6e22e">pattern</span>
+</span></span><span style="display:flex;"><span>        }
+</span></span><span style="display:flex;"><span>    }
+</span></span><span style="display:flex;"><span>    <span style="color:#66d9ef">return</span> <span style="color:#66d9ef">nil</span>, <span style="color:#e6db74">&#34;&#34;</span>
+</span></span><span style="display:flex;"><span>}
+</span></span></code></pre></div><p>这里可以看见首先通过<strong>v, ok := mux.m[path]</strong> 进行了精准匹配，如果精准匹配失败了则进行前缀匹配，这里可以联系我们前面提到的，处理函数注册时pattern是由长到短排序的，可以一次匹配最长子序列，以满足模糊查询时候的需求。<br>
+<strong>至此服务端创建和运行过程中大致的源码逻辑已经介绍完毕。</strong></p>
+<h2 id="2-客户端-1">2 客户端</h2>
+<h4 id="21-核心数据结构">2.1 核心数据结构</h4>
+<p>与服务端相同客户端也首先来熟悉一些数据结构。<br>
+<strong>Client：</strong><br>
+与服务端的Server类似，服务端的全部服务也被封装在Client中。</p>
+<div class="highlight"><pre tabindex="0" style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4;"><code class="language-Go" data-lang="Go"><span style="display:flex;"><span><span style="color:#66d9ef">type</span> <span style="color:#a6e22e">Client</span> <span style="color:#66d9ef">struct</span> {
+</span></span><span style="display:flex;"><span>    <span style="color:#f92672">...</span>
+</span></span><span style="display:flex;"><span>    <span style="color:#a6e22e">Transport</span> <span style="color:#a6e22e">RoundTripper</span>
+</span></span><span style="display:flex;"><span>    <span style="color:#f92672">...</span>
+</span></span><span style="display:flex;"><span>    <span style="color:#a6e22e">Jar</span> <span style="color:#a6e22e">CookieJar</span>
+</span></span><span style="display:flex;"><span>    <span style="color:#f92672">...</span>
+</span></span><span style="display:flex;"><span>    <span style="color:#a6e22e">Timeout</span> <span style="color:#a6e22e">time</span>.<span style="color:#a6e22e">Duration</span>
+</span></span><span style="display:flex;"><span>}
+</span></span></code></pre></div><p><img src="https://p6-juejin.byteimg.com/tos-cn-i-k3u1fbpfcp/ed0667e5d47a45e7b475bcca88f2236f~tplv-k3u1fbpfcp-watermark.image?" alt="Client.png">
+<strong>RoundTripper：</strong><br>
+RoundTripper是一个接口可以类比一下Handler，用于<strong>实现通讯</strong></p>
+<div class="highlight"><pre tabindex="0" style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4;"><code class="language-Go" data-lang="Go"><span style="display:flex;"><span><span style="color:#66d9ef">type</span> <span style="color:#a6e22e">RoundTripper</span> <span style="color:#66d9ef">interface</span> {
+</span></span><span style="display:flex;"><span>    <span style="color:#a6e22e">RoundTrip</span>(<span style="color:#f92672">*</span><span style="color:#a6e22e">Request</span>) (<span style="color:#f92672">*</span><span style="color:#a6e22e">Response</span>, <span style="color:#66d9ef">error</span>)
+</span></span><span style="display:flex;"><span>}
+</span></span></code></pre></div><p><img src="https://p6-juejin.byteimg.com/tos-cn-i-k3u1fbpfcp/e080d09df9e84a8a9e0e3cb5bb7ef5d6~tplv-k3u1fbpfcp-watermark.image?" alt="RoundTripper.png">
+<strong>Transport：</strong><br>
+Transport是RoundTripper的实现类，是默认的通讯模块，负责生成新的连接和管理连接。</p>
+<div class="highlight"><pre tabindex="0" style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4;"><code class="language-Go" data-lang="Go"><span style="display:flex;"><span><span style="color:#66d9ef">type</span> <span style="color:#a6e22e">Transport</span> <span style="color:#66d9ef">struct</span> {
+</span></span><span style="display:flex;"><span>    <span style="color:#a6e22e">idleConn</span>     <span style="color:#66d9ef">map</span>[<span style="color:#a6e22e">connectMethodKey</span>][]<span style="color:#f92672">*</span><span style="color:#a6e22e">persistConn</span> <span style="color:#75715e">// most recently used at end
+</span></span></span><span style="display:flex;"><span><span style="color:#75715e"></span>    <span style="color:#f92672">...</span>
+</span></span><span style="display:flex;"><span>    <span style="color:#a6e22e">DialContext</span> <span style="color:#66d9ef">func</span>(<span style="color:#a6e22e">ctx</span> <span style="color:#a6e22e">context</span>.<span style="color:#a6e22e">Context</span>, <span style="color:#a6e22e">network</span>, <span style="color:#a6e22e">addr</span> <span style="color:#66d9ef">string</span>) (<span style="color:#a6e22e">net</span>.<span style="color:#a6e22e">Conn</span>, <span style="color:#66d9ef">error</span>)
+</span></span><span style="display:flex;"><span>    <span style="color:#f92672">...</span>
+</span></span><span style="display:flex;"><span>}
+</span></span></code></pre></div><p><img src="https://p1-juejin.byteimg.com/tos-cn-i-k3u1fbpfcp/3acb9781aff745dc8347911296b1c29f~tplv-k3u1fbpfcp-watermark.image?" alt="Transport.png">
+<strong>Request：</strong><br>
+请求参数的结构体</p>
+<div class="highlight"><pre tabindex="0" style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4;"><code class="language-Go" data-lang="Go"><span style="display:flex;"><span><span style="color:#66d9ef">type</span> <span style="color:#a6e22e">Request</span> <span style="color:#66d9ef">struct</span> {
+</span></span><span style="display:flex;"><span>    <span style="color:#a6e22e">Method</span> <span style="color:#66d9ef">string</span>
+</span></span><span style="display:flex;"><span>    <span style="color:#a6e22e">URL</span> <span style="color:#f92672">*</span><span style="color:#a6e22e">url</span>.<span style="color:#a6e22e">URL</span>
+</span></span><span style="display:flex;"><span>    <span style="color:#a6e22e">Header</span> <span style="color:#a6e22e">Header</span>
+</span></span><span style="display:flex;"><span>    <span style="color:#a6e22e">Body</span> <span style="color:#a6e22e">io</span>.<span style="color:#a6e22e">ReadCloser</span>
+</span></span><span style="display:flex;"><span>    <span style="color:#a6e22e">Host</span> <span style="color:#66d9ef">string</span>
+</span></span><span style="display:flex;"><span>    <span style="color:#a6e22e">Form</span> <span style="color:#a6e22e">url</span>.<span style="color:#a6e22e">Values</span>
+</span></span><span style="display:flex;"><span>    <span style="color:#a6e22e">Response</span> <span style="color:#f92672">*</span><span style="color:#a6e22e">Response</span>
+</span></span><span style="display:flex;"><span>    <span style="color:#a6e22e">ctx</span> <span style="color:#a6e22e">context</span>.<span style="color:#a6e22e">Context</span>
+</span></span><span style="display:flex;"><span>    <span style="color:#f92672">...</span>
+</span></span><span style="display:flex;"><span>}
+</span></span></code></pre></div><p><img src="https://p6-juejin.byteimg.com/tos-cn-i-k3u1fbpfcp/d63ecf981bc7417d870266401cbf757a~tplv-k3u1fbpfcp-watermark.image?" alt="Request.png">
+<strong>Response：</strong><br>
+响应参数的结构体</p>
+<div class="highlight"><pre tabindex="0" style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4;"><code class="language-Go" data-lang="Go"><span style="display:flex;"><span><span style="color:#66d9ef">type</span> <span style="color:#a6e22e">Response</span> <span style="color:#66d9ef">struct</span> {
+</span></span><span style="display:flex;"><span>    <span style="color:#a6e22e">StatusCode</span> <span style="color:#66d9ef">int</span>    <span style="color:#75715e">// e.g. 200
+</span></span></span><span style="display:flex;"><span><span style="color:#75715e"></span>    <span style="color:#a6e22e">Proto</span>      <span style="color:#66d9ef">string</span> <span style="color:#75715e">// e.g. &#34;HTTP/1.0&#34;
+</span></span></span><span style="display:flex;"><span><span style="color:#75715e"></span>    <span style="color:#a6e22e">Header</span> <span style="color:#a6e22e">Header</span>
+</span></span><span style="display:flex;"><span>    <span style="color:#a6e22e">Body</span> <span style="color:#a6e22e">io</span>.<span style="color:#a6e22e">ReadCloser</span>
+</span></span><span style="display:flex;"><span>    <span style="color:#a6e22e">Request</span> <span style="color:#f92672">*</span><span style="color:#a6e22e">Request</span>
+</span></span><span style="display:flex;"><span>    <span style="color:#f92672">...</span>
+</span></span><span style="display:flex;"><span>}
+</span></span></code></pre></div><p><img src="https://p9-juejin.byteimg.com/tos-cn-i-k3u1fbpfcp/4affc241ad3e42c9b6800361e3f872df~tplv-k3u1fbpfcp-watermark.image?" alt="Response.png"></p>
+<h4 id="22-构造请求">2.2 构造请求</h4>
+<p>根据前文中提到的客户端发送请求主要分为<strong>构造请求</strong> 、<strong>建立连接</strong> 、<strong>进行通信</strong> 几个步骤，我们可以通过跟踪发送一个POST请求的源码实现来理解各个阶段的实现:</p>
+<div class="highlight"><pre tabindex="0" style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4;"><code class="language-Go" data-lang="Go"><span style="display:flex;"><span><span style="color:#a6e22e">resp</span>, <span style="color:#a6e22e">err</span> <span style="color:#f92672">:=</span> <span style="color:#a6e22e">http</span>.<span style="color:#a6e22e">Post</span>(<span style="color:#e6db74">&#34;http://localhost:8080/ping&#34;</span>, <span style="color:#e6db74">&#34;&#34;</span>, <span style="color:#66d9ef">nil</span>)
+</span></span></code></pre></div><p>这句代码向我们之前构造的http服务器发送请求，其中端口和请求路径是根据服务端的定义来书写的，传入的参数分别是服务端地址url，请求参数格式contenType以及请求参数的io reader。</p>
+<div class="highlight"><pre tabindex="0" style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4;"><code class="language-Go" data-lang="Go"><span style="display:flex;"><span><span style="color:#66d9ef">var</span> <span style="color:#a6e22e">DefaultClient</span> = <span style="color:#f92672">&amp;</span><span style="color:#a6e22e">Client</span>{}
+</span></span><span style="display:flex;"><span>
+</span></span><span style="display:flex;"><span><span style="color:#66d9ef">func</span> <span style="color:#a6e22e">Post</span>(<span style="color:#a6e22e">url</span>, <span style="color:#a6e22e">contentType</span> <span style="color:#66d9ef">string</span>, <span style="color:#a6e22e">body</span> <span style="color:#a6e22e">io</span>.<span style="color:#a6e22e">Reader</span>) (<span style="color:#a6e22e">resp</span> <span style="color:#f92672">*</span><span style="color:#a6e22e">Response</span>, <span style="color:#a6e22e">err</span> <span style="color:#66d9ef">error</span>) {
+</span></span><span style="display:flex;"><span>    <span style="color:#66d9ef">return</span> <span style="color:#a6e22e">DefaultClient</span>.<span style="color:#a6e22e">Post</span>(<span style="color:#a6e22e">url</span>, <span style="color:#a6e22e">contentType</span>, <span style="color:#a6e22e">body</span>)
+</span></span><span style="display:flex;"><span>}
+</span></span></code></pre></div><p>在不定义Client的情况下，Client就是前文提到的数据结构，客户端会自动调用一个全局单例DefaultClient来处理请求，调用Client.Post:</p>
+<div class="highlight"><pre tabindex="0" style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4;"><code class="language-Go" data-lang="Go"><span style="display:flex;"><span><span style="color:#66d9ef">func</span> (<span style="color:#a6e22e">c</span> <span style="color:#f92672">*</span><span style="color:#a6e22e">Client</span>) <span style="color:#a6e22e">Post</span>(<span style="color:#a6e22e">url</span>, <span style="color:#a6e22e">contentType</span> <span style="color:#66d9ef">string</span>, <span style="color:#a6e22e">body</span> <span style="color:#a6e22e">io</span>.<span style="color:#a6e22e">Reader</span>) (<span style="color:#a6e22e">resp</span> <span style="color:#f92672">*</span><span style="color:#a6e22e">Response</span>, <span style="color:#a6e22e">err</span> <span style="color:#66d9ef">error</span>) {
+</span></span><span style="display:flex;"><span>    <span style="color:#a6e22e">req</span>, <span style="color:#a6e22e">err</span> <span style="color:#f92672">:=</span> <span style="color:#a6e22e">NewRequest</span>(<span style="color:#e6db74">&#34;POST&#34;</span>, <span style="color:#a6e22e">url</span>, <span style="color:#a6e22e">body</span>)
+</span></span><span style="display:flex;"><span>    <span style="color:#75715e">// ...
+</span></span></span><span style="display:flex;"><span><span style="color:#75715e"></span>    <span style="color:#a6e22e">req</span>.<span style="color:#a6e22e">Header</span>.<span style="color:#a6e22e">Set</span>(<span style="color:#e6db74">&#34;Content-Type&#34;</span>, <span style="color:#a6e22e">contentType</span>)
+</span></span><span style="display:flex;"><span>    <span style="color:#66d9ef">return</span> <span style="color:#a6e22e">c</span>.<span style="color:#a6e22e">Do</span>(<span style="color:#a6e22e">req</span>)
+</span></span><span style="display:flex;"><span>}
+</span></span></code></pre></div><p>在该方法中会将传入的参数进行组合，并且调用<strong>NewRequest</strong>方法创建一个新的请求，<strong>req.Header.Set</strong>用于设置Header头部，然后调用<strong>c.Do</strong>方法来处理请求，<strong>NewREquest</strong>方法的实现如下：</p>
+<div class="highlight"><pre tabindex="0" style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4;"><code class="language-Go" data-lang="Go"><span style="display:flex;"><span><span style="color:#75715e">// NewRequest wraps NewRequestWithContext using context.Background.  
+</span></span></span><span style="display:flex;"><span><span style="color:#75715e"></span><span style="color:#66d9ef">func</span> <span style="color:#a6e22e">NewRequest</span>(<span style="color:#a6e22e">method</span>, <span style="color:#a6e22e">url</span> <span style="color:#66d9ef">string</span>, <span style="color:#a6e22e">body</span> <span style="color:#a6e22e">io</span>.<span style="color:#a6e22e">Reader</span>) (<span style="color:#f92672">*</span><span style="color:#a6e22e">Request</span>, <span style="color:#66d9ef">error</span>) {  
+</span></span><span style="display:flex;"><span>    <span style="color:#66d9ef">return</span> <span style="color:#a6e22e">NewRequestWithContext</span>(<span style="color:#a6e22e">context</span>.<span style="color:#a6e22e">Background</span>(), <span style="color:#a6e22e">method</span>, <span style="color:#a6e22e">url</span>, <span style="color:#a6e22e">body</span>)  
+</span></span><span style="display:flex;"><span>}
+</span></span><span style="display:flex;"><span>
+</span></span><span style="display:flex;"><span><span style="color:#66d9ef">func</span> <span style="color:#a6e22e">NewRequestWithContext</span>(<span style="color:#a6e22e">ctx</span> <span style="color:#a6e22e">context</span>.<span style="color:#a6e22e">Context</span>, <span style="color:#a6e22e">method</span>, <span style="color:#a6e22e">url</span> <span style="color:#66d9ef">string</span>, <span style="color:#a6e22e">body</span> <span style="color:#a6e22e">io</span>.<span style="color:#a6e22e">Reader</span>) (<span style="color:#f92672">*</span><span style="color:#a6e22e">Request</span>, <span style="color:#66d9ef">error</span>) {
+</span></span><span style="display:flex;"><span>    <span style="color:#f92672">...</span>
+</span></span><span style="display:flex;"><span>    <span style="color:#a6e22e">u</span>, <span style="color:#a6e22e">err</span> <span style="color:#f92672">:=</span> <span style="color:#a6e22e">urlpkg</span>.<span style="color:#a6e22e">Parse</span>(<span style="color:#a6e22e">url</span>)
+</span></span><span style="display:flex;"><span>    <span style="color:#f92672">...</span>
+</span></span><span style="display:flex;"><span>    <span style="color:#a6e22e">rc</span>, <span style="color:#a6e22e">ok</span> <span style="color:#f92672">:=</span> <span style="color:#a6e22e">body</span>.(<span style="color:#a6e22e">io</span>.<span style="color:#a6e22e">ReadCloser</span>)
+</span></span><span style="display:flex;"><span>    <span style="color:#f92672">...</span>
+</span></span><span style="display:flex;"><span>    <span style="color:#a6e22e">req</span> <span style="color:#f92672">:=</span> <span style="color:#f92672">&amp;</span><span style="color:#a6e22e">Request</span>{
+</span></span><span style="display:flex;"><span>        <span style="color:#a6e22e">ctx</span>:        <span style="color:#a6e22e">ctx</span>,
+</span></span><span style="display:flex;"><span>        <span style="color:#a6e22e">Method</span>:     <span style="color:#a6e22e">method</span>,
+</span></span><span style="display:flex;"><span>        <span style="color:#a6e22e">URL</span>:        <span style="color:#a6e22e">u</span>,
+</span></span><span style="display:flex;"><span>        <span style="color:#f92672">...</span>
+</span></span><span style="display:flex;"><span>        <span style="color:#a6e22e">Header</span>:     make(<span style="color:#a6e22e">Header</span>),
+</span></span><span style="display:flex;"><span>        <span style="color:#a6e22e">Body</span>:       <span style="color:#a6e22e">rc</span>,
+</span></span><span style="display:flex;"><span>        <span style="color:#a6e22e">Host</span>:       <span style="color:#a6e22e">u</span>.<span style="color:#a6e22e">Host</span>,
+</span></span><span style="display:flex;"><span>    }
+</span></span><span style="display:flex;"><span>    <span style="color:#f92672">...</span>
+</span></span><span style="display:flex;"><span>    <span style="color:#66d9ef">return</span> <span style="color:#a6e22e">req</span>, <span style="color:#66d9ef">nil</span>
+</span></span><span style="display:flex;"><span>}
+</span></span></code></pre></div><p>此处method传入了POST指的是请求类型，url为服务端路径，body为入参。</p>
+<h4 id="23-建立连接与通信">2.3 建立连接与通信</h4>
+<p>创建完请求之后可以开始建立与服务端之间的通信，这部分由上述<strong>Client.Do</strong>方法的逻辑完成：</p>
+<div class="highlight"><pre tabindex="0" style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4;"><code class="language-Go" data-lang="Go"><span style="display:flex;"><span><span style="color:#66d9ef">func</span> (<span style="color:#a6e22e">c</span> <span style="color:#f92672">*</span><span style="color:#a6e22e">Client</span>) <span style="color:#a6e22e">Do</span>(<span style="color:#a6e22e">req</span> <span style="color:#f92672">*</span><span style="color:#a6e22e">Request</span>) (<span style="color:#f92672">*</span><span style="color:#a6e22e">Response</span>, <span style="color:#66d9ef">error</span>) {
+</span></span><span style="display:flex;"><span>    <span style="color:#66d9ef">return</span> <span style="color:#a6e22e">c</span>.<span style="color:#a6e22e">do</span>(<span style="color:#a6e22e">req</span>)
+</span></span><span style="display:flex;"><span>}
+</span></span><span style="display:flex;"><span>
+</span></span><span style="display:flex;"><span><span style="color:#66d9ef">func</span> (<span style="color:#a6e22e">c</span> <span style="color:#f92672">*</span><span style="color:#a6e22e">Client</span>) <span style="color:#a6e22e">do</span>(<span style="color:#a6e22e">req</span> <span style="color:#f92672">*</span><span style="color:#a6e22e">Request</span>) (<span style="color:#a6e22e">retres</span> <span style="color:#f92672">*</span><span style="color:#a6e22e">Response</span>, <span style="color:#a6e22e">reterr</span> <span style="color:#66d9ef">error</span>) {
+</span></span><span style="display:flex;"><span>    <span style="color:#66d9ef">var</span> (
+</span></span><span style="display:flex;"><span>        <span style="color:#a6e22e">deadline</span>      = <span style="color:#a6e22e">c</span>.<span style="color:#a6e22e">deadline</span>()
+</span></span><span style="display:flex;"><span>        <span style="color:#a6e22e">resp</span>          <span style="color:#f92672">*</span><span style="color:#a6e22e">Response</span>
+</span></span><span style="display:flex;"><span>        <span style="color:#f92672">...</span>
+</span></span><span style="display:flex;"><span>    )    
+</span></span><span style="display:flex;"><span>    <span style="color:#66d9ef">for</span> {
+</span></span><span style="display:flex;"><span>        <span style="color:#f92672">...</span>
+</span></span><span style="display:flex;"><span>        <span style="color:#66d9ef">var</span> <span style="color:#a6e22e">err</span> <span style="color:#66d9ef">error</span>       
+</span></span><span style="display:flex;"><span>        <span style="color:#66d9ef">if</span> <span style="color:#a6e22e">resp</span>, <span style="color:#a6e22e">didTimeout</span>, <span style="color:#a6e22e">err</span> = <span style="color:#a6e22e">c</span>.<span style="color:#a6e22e">send</span>(<span style="color:#a6e22e">req</span>, <span style="color:#a6e22e">deadline</span>); <span style="color:#a6e22e">err</span> <span style="color:#f92672">!=</span> <span style="color:#66d9ef">nil</span> {
+</span></span><span style="display:flex;"><span>            <span style="color:#f92672">...</span>
+</span></span><span style="display:flex;"><span>        }
+</span></span><span style="display:flex;"><span>        <span style="color:#f92672">...</span>
+</span></span><span style="display:flex;"><span>    }
+</span></span><span style="display:flex;"><span>}
+</span></span></code></pre></div><p>在<strong>Client.do</strong>中会调用<strong>c.send</strong>正式发起连接：</p>
+<div class="highlight"><pre tabindex="0" style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4;"><code class="language-Go" data-lang="Go"><span style="display:flex;"><span><span style="color:#66d9ef">func</span> (<span style="color:#a6e22e">c</span> <span style="color:#f92672">*</span><span style="color:#a6e22e">Client</span>) <span style="color:#a6e22e">send</span>(<span style="color:#a6e22e">req</span> <span style="color:#f92672">*</span><span style="color:#a6e22e">Request</span>, <span style="color:#a6e22e">deadline</span> <span style="color:#a6e22e">time</span>.<span style="color:#a6e22e">Time</span>) (<span style="color:#a6e22e">resp</span> <span style="color:#f92672">*</span><span style="color:#a6e22e">Response</span>, <span style="color:#a6e22e">didTimeout</span> <span style="color:#66d9ef">func</span>() <span style="color:#66d9ef">bool</span>, <span style="color:#a6e22e">err</span> <span style="color:#66d9ef">error</span>) {
+</span></span><span style="display:flex;"><span>    <span style="color:#75715e">// 设置 cookie 到请求头中
+</span></span></span><span style="display:flex;"><span><span style="color:#75715e"></span>    <span style="color:#66d9ef">if</span> <span style="color:#a6e22e">c</span>.<span style="color:#a6e22e">Jar</span> <span style="color:#f92672">!=</span> <span style="color:#66d9ef">nil</span> {
+</span></span><span style="display:flex;"><span>        <span style="color:#66d9ef">for</span> <span style="color:#a6e22e">_</span>, <span style="color:#a6e22e">cookie</span> <span style="color:#f92672">:=</span> <span style="color:#66d9ef">range</span> <span style="color:#a6e22e">c</span>.<span style="color:#a6e22e">Jar</span>.<span style="color:#a6e22e">Cookies</span>(<span style="color:#a6e22e">req</span>.<span style="color:#a6e22e">URL</span>) {
+</span></span><span style="display:flex;"><span>            <span style="color:#a6e22e">req</span>.<span style="color:#a6e22e">AddCookie</span>(<span style="color:#a6e22e">cookie</span>)
+</span></span><span style="display:flex;"><span>        }
+</span></span><span style="display:flex;"><span>    }
+</span></span><span style="display:flex;"><span>    <span style="color:#75715e">// 发送请求
+</span></span></span><span style="display:flex;"><span><span style="color:#75715e"></span>    <span style="color:#a6e22e">resp</span>, <span style="color:#a6e22e">didTimeout</span>, <span style="color:#a6e22e">err</span> = <span style="color:#a6e22e">send</span>(<span style="color:#a6e22e">req</span>, <span style="color:#a6e22e">c</span>.<span style="color:#a6e22e">transport</span>(), <span style="color:#a6e22e">deadline</span>)
+</span></span><span style="display:flex;"><span>    <span style="color:#66d9ef">if</span> <span style="color:#a6e22e">err</span> <span style="color:#f92672">!=</span> <span style="color:#66d9ef">nil</span> {
+</span></span><span style="display:flex;"><span>        <span style="color:#66d9ef">return</span> <span style="color:#66d9ef">nil</span>, <span style="color:#a6e22e">didTimeout</span>, <span style="color:#a6e22e">err</span>
+</span></span><span style="display:flex;"><span>    }
+</span></span><span style="display:flex;"><span>    <span style="color:#75715e">// 更新 resp 的 cookie 到请求头中
+</span></span></span><span style="display:flex;"><span><span style="color:#75715e"></span>    <span style="color:#66d9ef">if</span> <span style="color:#a6e22e">c</span>.<span style="color:#a6e22e">Jar</span> <span style="color:#f92672">!=</span> <span style="color:#66d9ef">nil</span> {
+</span></span><span style="display:flex;"><span>        <span style="color:#66d9ef">if</span> <span style="color:#a6e22e">rc</span> <span style="color:#f92672">:=</span> <span style="color:#a6e22e">resp</span>.<span style="color:#a6e22e">Cookies</span>(); len(<span style="color:#a6e22e">rc</span>) &gt; <span style="color:#ae81ff">0</span> {
+</span></span><span style="display:flex;"><span>            <span style="color:#a6e22e">c</span>.<span style="color:#a6e22e">Jar</span>.<span style="color:#a6e22e">SetCookies</span>(<span style="color:#a6e22e">req</span>.<span style="color:#a6e22e">URL</span>, <span style="color:#a6e22e">rc</span>)
+</span></span><span style="display:flex;"><span>        }
+</span></span><span style="display:flex;"><span>    }
+</span></span><span style="display:flex;"><span>    <span style="color:#66d9ef">return</span> <span style="color:#a6e22e">resp</span>, <span style="color:#66d9ef">nil</span>, <span style="color:#66d9ef">nil</span>
+</span></span><span style="display:flex;"><span>}
+</span></span></code></pre></div><p>发送请求前到<strong>c.Jar != nil</strong>部分将cookie设置到请求头中，完成前处理，发送请求后到部分会讲resp中的cookie更新至请求头中完成后处理。在send方法中会需要注入RoundTripper模块，默认会使用<strong>DefaultTransport</strong>进行注入：</p>
+<div class="highlight"><pre tabindex="0" style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4;"><code class="language-Go" data-lang="Go"><span style="display:flex;"><span><span style="color:#66d9ef">var</span> <span style="color:#a6e22e">DefaultTransport</span> <span style="color:#a6e22e">RoundTripper</span> = <span style="color:#f92672">&amp;</span><span style="color:#a6e22e">Transport</span>{
+</span></span><span style="display:flex;"><span>    <span style="color:#75715e">// ...
+</span></span></span><span style="display:flex;"><span><span style="color:#75715e"></span>    <span style="color:#a6e22e">DialContext</span>: <span style="color:#a6e22e">defaultTransportDialContext</span>(<span style="color:#f92672">&amp;</span><span style="color:#a6e22e">net</span>.<span style="color:#a6e22e">Dialer</span>{
+</span></span><span style="display:flex;"><span>        <span style="color:#a6e22e">Timeout</span>:   <span style="color:#ae81ff">30</span> <span style="color:#f92672">*</span> <span style="color:#a6e22e">time</span>.<span style="color:#a6e22e">Second</span>,
+</span></span><span style="display:flex;"><span>        <span style="color:#a6e22e">KeepAlive</span>: <span style="color:#ae81ff">30</span> <span style="color:#f92672">*</span> <span style="color:#a6e22e">time</span>.<span style="color:#a6e22e">Second</span>,
+</span></span><span style="display:flex;"><span>    }),
+</span></span><span style="display:flex;"><span>    <span style="color:#f92672">...</span>
+</span></span><span style="display:flex;"><span>}
+</span></span><span style="display:flex;"><span>
+</span></span><span style="display:flex;"><span>
+</span></span><span style="display:flex;"><span><span style="color:#66d9ef">func</span> (<span style="color:#a6e22e">c</span> <span style="color:#f92672">*</span><span style="color:#a6e22e">Client</span>) <span style="color:#a6e22e">transport</span>() <span style="color:#a6e22e">RoundTripper</span> {
+</span></span><span style="display:flex;"><span>    <span style="color:#66d9ef">if</span> <span style="color:#a6e22e">c</span>.<span style="color:#a6e22e">Transport</span> <span style="color:#f92672">!=</span> <span style="color:#66d9ef">nil</span> {
+</span></span><span style="display:flex;"><span>        <span style="color:#66d9ef">return</span> <span style="color:#a6e22e">c</span>.<span style="color:#a6e22e">Transport</span>
+</span></span><span style="display:flex;"><span>    }
+</span></span><span style="display:flex;"><span>    <span style="color:#66d9ef">return</span> <span style="color:#a6e22e">DefaultTransport</span>
+</span></span><span style="display:flex;"><span>}
+</span></span></code></pre></div><p>这里可以结合上文中对于RoundTripper数据结构进行的分析进行理解，接下来回到上文中调用了一个函数send，<strong>resp, didTimeout, err = send(req, c.transport(), deadline)</strong>，这个函数中会调用<strong>Transport.RoundTrip</strong>方法，该方法又会调用<strong>Transport.roundTrip</strong>这部分调用的过程省略主要关注roundTrip方法：</p>
+<div class="highlight"><pre tabindex="0" style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4;"><code class="language-Go" data-lang="Go"><span style="display:flex;"><span><span style="color:#66d9ef">func</span> (<span style="color:#a6e22e">t</span> <span style="color:#f92672">*</span><span style="color:#a6e22e">Transport</span>) <span style="color:#a6e22e">roundTrip</span>(<span style="color:#a6e22e">req</span> <span style="color:#f92672">*</span><span style="color:#a6e22e">Request</span>) (<span style="color:#f92672">*</span><span style="color:#a6e22e">Response</span>, <span style="color:#66d9ef">error</span>) {
+</span></span><span style="display:flex;"><span>    <span style="color:#f92672">...</span>
+</span></span><span style="display:flex;"><span>    <span style="color:#66d9ef">for</span> {          
+</span></span><span style="display:flex;"><span>        <span style="color:#f92672">...</span>    
+</span></span><span style="display:flex;"><span>        <span style="color:#a6e22e">treq</span> <span style="color:#f92672">:=</span> <span style="color:#f92672">&amp;</span><span style="color:#a6e22e">transportRequest</span>{<span style="color:#a6e22e">Request</span>: <span style="color:#a6e22e">req</span>, <span style="color:#a6e22e">trace</span>: <span style="color:#a6e22e">trace</span>, <span style="color:#a6e22e">cancelKey</span>: <span style="color:#a6e22e">cancelKey</span>}      
+</span></span><span style="display:flex;"><span>        <span style="color:#f92672">...</span>
+</span></span><span style="display:flex;"><span>        <span style="color:#a6e22e">pconn</span>, <span style="color:#a6e22e">err</span> <span style="color:#f92672">:=</span> <span style="color:#a6e22e">t</span>.<span style="color:#a6e22e">getConn</span>(<span style="color:#a6e22e">treq</span>, <span style="color:#a6e22e">cm</span>)        
+</span></span><span style="display:flex;"><span>        <span style="color:#f92672">...</span>
+</span></span><span style="display:flex;"><span>        <span style="color:#a6e22e">resp</span>, <span style="color:#a6e22e">err</span> = <span style="color:#a6e22e">pconn</span>.<span style="color:#a6e22e">roundTrip</span>(<span style="color:#a6e22e">treq</span>)          
+</span></span><span style="display:flex;"><span>        <span style="color:#f92672">...</span>
+</span></span><span style="display:flex;"><span>    }
+</span></span><span style="display:flex;"><span>}
+</span></span></code></pre></div><p><strong>pconn, err := t.getConn(treq, cm)</strong> 部分请求了一个tcp连接赋值给了pconn，<strong>resp, err = pconn.roundTrip(treq)</strong> 又调用了这个连接的roundTrip方法。首先来分析<strong>getConn</strong>方法如何建立连接：</p>
+<div class="highlight"><pre tabindex="0" style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4;"><code class="language-Go" data-lang="Go"><span style="display:flex;"><span><span style="color:#66d9ef">func</span> (<span style="color:#a6e22e">t</span> <span style="color:#f92672">*</span><span style="color:#a6e22e">Transport</span>) <span style="color:#a6e22e">getConn</span>(<span style="color:#a6e22e">treq</span> <span style="color:#f92672">*</span><span style="color:#a6e22e">transportRequest</span>, <span style="color:#a6e22e">cm</span> <span style="color:#a6e22e">connectMethod</span>) (<span style="color:#a6e22e">pc</span> <span style="color:#f92672">*</span><span style="color:#a6e22e">persistConn</span>, <span style="color:#a6e22e">err</span> <span style="color:#66d9ef">error</span>) {
+</span></span><span style="display:flex;"><span>    <span style="color:#75715e">// 获取连接的请求参数体
+</span></span></span><span style="display:flex;"><span><span style="color:#75715e"></span>    <span style="color:#a6e22e">w</span> <span style="color:#f92672">:=</span> <span style="color:#f92672">&amp;</span><span style="color:#a6e22e">wantConn</span>{
+</span></span><span style="display:flex;"><span>        <span style="color:#a6e22e">cm</span>:         <span style="color:#a6e22e">cm</span>,
+</span></span><span style="display:flex;"><span>        <span style="color:#75715e">// key 由 http 协议、服务端地址等信息组成
+</span></span></span><span style="display:flex;"><span><span style="color:#75715e"></span>        <span style="color:#a6e22e">key</span>:        <span style="color:#a6e22e">cm</span>.<span style="color:#a6e22e">key</span>(),
+</span></span><span style="display:flex;"><span>        <span style="color:#a6e22e">ctx</span>:        <span style="color:#a6e22e">ctx</span>,
+</span></span><span style="display:flex;"><span>        <span style="color:#75715e">// 标识连接构造成功的信号发射器
+</span></span></span><span style="display:flex;"><span><span style="color:#75715e"></span>        <span style="color:#a6e22e">ready</span>:      make(<span style="color:#66d9ef">chan</span> <span style="color:#66d9ef">struct</span>{}, <span style="color:#ae81ff">1</span>),
+</span></span><span style="display:flex;"><span>    }
+</span></span><span style="display:flex;"><span>    <span style="color:#75715e">// 倘若连接获取失败，在 wantConn.cancel 方法中，会尝试将 tcp 连接放回队列中以供后续复用
+</span></span></span><span style="display:flex;"><span><span style="color:#75715e"></span>    <span style="color:#66d9ef">defer</span> <span style="color:#66d9ef">func</span>() {
+</span></span><span style="display:flex;"><span>        <span style="color:#66d9ef">if</span> <span style="color:#a6e22e">err</span> <span style="color:#f92672">!=</span> <span style="color:#66d9ef">nil</span> {
+</span></span><span style="display:flex;"><span>            <span style="color:#a6e22e">w</span>.<span style="color:#a6e22e">cancel</span>(<span style="color:#a6e22e">t</span>, <span style="color:#a6e22e">err</span>)
+</span></span><span style="display:flex;"><span>        }
+</span></span><span style="display:flex;"><span>    }()
+</span></span><span style="display:flex;"><span>    <span style="color:#75715e">// 尝试复用指向相同服务端地址的空闲连接
+</span></span></span><span style="display:flex;"><span><span style="color:#75715e"></span>    <span style="color:#66d9ef">if</span> <span style="color:#a6e22e">delivered</span> <span style="color:#f92672">:=</span> <span style="color:#a6e22e">t</span>.<span style="color:#a6e22e">queueForIdleConn</span>(<span style="color:#a6e22e">w</span>); <span style="color:#a6e22e">delivered</span> {
+</span></span><span style="display:flex;"><span>        <span style="color:#a6e22e">pc</span> <span style="color:#f92672">:=</span> <span style="color:#a6e22e">w</span>.<span style="color:#a6e22e">pc</span>
+</span></span><span style="display:flex;"><span>        <span style="color:#f92672">...</span>
+</span></span><span style="display:flex;"><span>        <span style="color:#66d9ef">return</span> <span style="color:#a6e22e">pc</span>, <span style="color:#66d9ef">nil</span>
+</span></span><span style="display:flex;"><span>    }
+</span></span><span style="display:flex;"><span>    <span style="color:#75715e">// 异步构造新的连接
+</span></span></span><span style="display:flex;"><span><span style="color:#75715e"></span>    <span style="color:#a6e22e">t</span>.<span style="color:#a6e22e">queueForDial</span>(<span style="color:#a6e22e">w</span>)
+</span></span><span style="display:flex;"><span>    <span style="color:#66d9ef">select</span> {
+</span></span><span style="display:flex;"><span>    <span style="color:#75715e">// 通过阻塞等待信号的方式，等待连接获取完成
+</span></span></span><span style="display:flex;"><span><span style="color:#75715e"></span>    <span style="color:#66d9ef">case</span> <span style="color:#f92672">&lt;-</span><span style="color:#a6e22e">w</span>.<span style="color:#a6e22e">ready</span>:
+</span></span><span style="display:flex;"><span>        <span style="color:#f92672">...</span>
+</span></span><span style="display:flex;"><span>        <span style="color:#66d9ef">return</span> <span style="color:#a6e22e">w</span>.<span style="color:#a6e22e">pc</span>, <span style="color:#a6e22e">w</span>.<span style="color:#a6e22e">err</span>
+</span></span><span style="display:flex;"><span>    <span style="color:#f92672">...</span>
+</span></span><span style="display:flex;"><span>    }
+</span></span><span style="display:flex;"><span>}
+</span></span></code></pre></div><p>在阅读这部分源码前，我们需要理解TCP连接是相对宝贵的资源，所以在可以复用的情况下要尽量复用。对于<strong>采用相同协议、访问相同服务端的连接，如果处于空闲状态我们可以尝试进行复用</strong>。如果没有可以复用的连接，则需要通过<strong>queueForIdleConn</strong>方法异步地创建一个新的连接，此处通过一个channel信号来监测是否已经完成了构造连接的工作。</p>
+<div class="highlight"><pre tabindex="0" style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4;"><code class="language-Go" data-lang="Go"><span style="display:flex;"><span><span style="color:#66d9ef">func</span> (<span style="color:#a6e22e">t</span> <span style="color:#f92672">*</span><span style="color:#a6e22e">Transport</span>) <span style="color:#a6e22e">queueForDial</span>(<span style="color:#a6e22e">w</span> <span style="color:#f92672">*</span><span style="color:#a6e22e">wantConn</span>) {
+</span></span><span style="display:flex;"><span>    <span style="color:#f92672">...</span>
+</span></span><span style="display:flex;"><span>    <span style="color:#66d9ef">go</span> <span style="color:#a6e22e">t</span>.<span style="color:#a6e22e">dialConnFor</span>(<span style="color:#a6e22e">w</span>) 
+</span></span><span style="display:flex;"><span>    <span style="color:#f92672">...</span>
+</span></span><span style="display:flex;"><span>}
+</span></span></code></pre></div><p>这里创建过程采用异步操作主要有两部分原因，首先tcp连接不是一个静态的过程，是具有生命周期的会有两个协程相伴而生，因此需要一段时间分配资源，异步可以增加灵活性。另一方面上层函数可以通过select多路复用的方式接收到其他终止信号，这样可以提前打断连接的创建，可以增加创建过程的灵活度。</p>
+<div class="highlight"><pre tabindex="0" style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4;"><code class="language-Go" data-lang="Go"><span style="display:flex;"><span><span style="color:#66d9ef">func</span> (<span style="color:#a6e22e">t</span> <span style="color:#f92672">*</span><span style="color:#a6e22e">Transport</span>) <span style="color:#a6e22e">dialConnFor</span>(<span style="color:#a6e22e">w</span> <span style="color:#f92672">*</span><span style="color:#a6e22e">wantConn</span>) {
+</span></span><span style="display:flex;"><span>    <span style="color:#f92672">...</span>
+</span></span><span style="display:flex;"><span>    <span style="color:#a6e22e">pc</span>, <span style="color:#a6e22e">err</span> <span style="color:#f92672">:=</span> <span style="color:#a6e22e">t</span>.<span style="color:#a6e22e">dialConn</span>(<span style="color:#a6e22e">w</span>.<span style="color:#a6e22e">ctx</span>, <span style="color:#a6e22e">w</span>.<span style="color:#a6e22e">cm</span>)
+</span></span><span style="display:flex;"><span>    <span style="color:#a6e22e">delivered</span> <span style="color:#f92672">:=</span> <span style="color:#a6e22e">w</span>.<span style="color:#a6e22e">tryDeliver</span>(<span style="color:#a6e22e">pc</span>, <span style="color:#a6e22e">err</span>)
+</span></span><span style="display:flex;"><span>    <span style="color:#f92672">...</span>
+</span></span><span style="display:flex;"><span>}
+</span></span></code></pre></div><p>Transport.dialConnFor 方法中，首先调用 Transport.dialConn 创建 tcp 连接 persisConn，接着执行 wantConn.tryDeliver 方法，将连接绑定到 wantConn 上，然后通过关闭 ready channel 操作唤醒上游读 ready channel 的 goroutine。</p>
+<div class="highlight"><pre tabindex="0" style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4;"><code class="language-Go" data-lang="Go"><span style="display:flex;"><span><span style="color:#66d9ef">func</span> (<span style="color:#a6e22e">t</span> <span style="color:#f92672">*</span><span style="color:#a6e22e">Transport</span>) <span style="color:#a6e22e">dialConn</span>(<span style="color:#a6e22e">ctx</span> <span style="color:#a6e22e">context</span>.<span style="color:#a6e22e">Context</span>, <span style="color:#a6e22e">cm</span> <span style="color:#a6e22e">connectMethod</span>) (<span style="color:#a6e22e">pconn</span> <span style="color:#f92672">*</span><span style="color:#a6e22e">persistConn</span>, <span style="color:#a6e22e">err</span> <span style="color:#66d9ef">error</span>) {
+</span></span><span style="display:flex;"><span>    <span style="color:#a6e22e">pconn</span> = <span style="color:#f92672">&amp;</span><span style="color:#a6e22e">persistConn</span>{
+</span></span><span style="display:flex;"><span>        <span style="color:#a6e22e">t</span>:             <span style="color:#a6e22e">t</span>,
+</span></span><span style="display:flex;"><span>        <span style="color:#a6e22e">reqch</span>:         make(<span style="color:#66d9ef">chan</span> <span style="color:#a6e22e">requestAndChan</span>, <span style="color:#ae81ff">1</span>),
+</span></span><span style="display:flex;"><span>        <span style="color:#a6e22e">writech</span>:       make(<span style="color:#66d9ef">chan</span> <span style="color:#a6e22e">writeRequest</span>, <span style="color:#ae81ff">1</span>),
+</span></span><span style="display:flex;"><span>        <span style="color:#f92672">...</span>
+</span></span><span style="display:flex;"><span>    }
+</span></span><span style="display:flex;"><span>    
+</span></span><span style="display:flex;"><span>    <span style="color:#a6e22e">conn</span>, <span style="color:#a6e22e">err</span> <span style="color:#f92672">:=</span> <span style="color:#a6e22e">t</span>.<span style="color:#a6e22e">dial</span>(<span style="color:#a6e22e">ctx</span>, <span style="color:#e6db74">&#34;tcp&#34;</span>, <span style="color:#a6e22e">cm</span>.<span style="color:#a6e22e">addr</span>())
+</span></span><span style="display:flex;"><span>    <span style="color:#f92672">...</span>
+</span></span><span style="display:flex;"><span>    <span style="color:#a6e22e">pconn</span>.<span style="color:#a6e22e">conn</span> = <span style="color:#a6e22e">conn</span>      
+</span></span><span style="display:flex;"><span>    <span style="color:#f92672">...</span>
+</span></span><span style="display:flex;"><span>   
+</span></span><span style="display:flex;"><span>    <span style="color:#66d9ef">go</span> <span style="color:#a6e22e">pconn</span>.<span style="color:#a6e22e">readLoop</span>()
+</span></span><span style="display:flex;"><span>    <span style="color:#66d9ef">go</span> <span style="color:#a6e22e">pconn</span>.<span style="color:#a6e22e">writeLoop</span>()
+</span></span><span style="display:flex;"><span>    <span style="color:#66d9ef">return</span> <span style="color:#a6e22e">pconn</span>, <span style="color:#66d9ef">nil</span>
+</span></span><span style="display:flex;"><span>}
+</span></span></code></pre></div><p>Transport.dialConn 方法包含了创建连接的核心逻辑：</p>
+<ul>
+<li>调用 Transport.dial 方法，最终通过 Tranport.DialContext 成员函数，创建好 tcp 连接，封装到 persistConn 当中</li>
+<li>异步启动连接的伴生读写协程 readLoop 和 writeLoop 方法，组成提交请求、接收响应的循环</li>
+</ul>
+<div class="highlight"><pre tabindex="0" style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4;"><code class="language-Go" data-lang="Go"><span style="display:flex;"><span><span style="color:#66d9ef">func</span> (<span style="color:#a6e22e">pc</span> <span style="color:#f92672">*</span><span style="color:#a6e22e">persistConn</span>) <span style="color:#a6e22e">readLoop</span>() { 
+</span></span><span style="display:flex;"><span>    <span style="color:#f92672">...</span>
+</span></span><span style="display:flex;"><span>    <span style="color:#a6e22e">alive</span> <span style="color:#f92672">:=</span> <span style="color:#66d9ef">true</span>
+</span></span><span style="display:flex;"><span>    <span style="color:#66d9ef">for</span> <span style="color:#a6e22e">alive</span> {
+</span></span><span style="display:flex;"><span>        <span style="color:#f92672">...</span>
+</span></span><span style="display:flex;"><span>        <span style="color:#a6e22e">rc</span> <span style="color:#f92672">:=</span> <span style="color:#f92672">&lt;-</span><span style="color:#a6e22e">pc</span>.<span style="color:#a6e22e">reqch</span>
+</span></span><span style="display:flex;"><span>        <span style="color:#f92672">...</span>
+</span></span><span style="display:flex;"><span>        <span style="color:#66d9ef">var</span> <span style="color:#a6e22e">resp</span> <span style="color:#f92672">*</span><span style="color:#a6e22e">Response</span>
+</span></span><span style="display:flex;"><span>        <span style="color:#f92672">...</span>
+</span></span><span style="display:flex;"><span>        <span style="color:#a6e22e">resp</span>, <span style="color:#a6e22e">err</span> = <span style="color:#a6e22e">pc</span>.<span style="color:#a6e22e">readResponse</span>(<span style="color:#a6e22e">rc</span>, <span style="color:#a6e22e">trace</span>)
+</span></span><span style="display:flex;"><span>        <span style="color:#f92672">...</span>
+</span></span><span style="display:flex;"><span>        <span style="color:#66d9ef">select</span>{
+</span></span><span style="display:flex;"><span>            <span style="color:#a6e22e">rc</span>.<span style="color:#a6e22e">ch</span> <span style="color:#f92672">&lt;-</span> <span style="color:#a6e22e">responseAndError</span>{<span style="color:#a6e22e">res</span>: <span style="color:#a6e22e">resp</span>}:
+</span></span><span style="display:flex;"><span>            <span style="color:#f92672">...</span>
+</span></span><span style="display:flex;"><span>        }
+</span></span><span style="display:flex;"><span>        <span style="color:#f92672">...</span>        
+</span></span><span style="display:flex;"><span>    }
+</span></span><span style="display:flex;"><span>    
+</span></span><span style="display:flex;"><span>}
+</span></span><span style="display:flex;"><span>
+</span></span><span style="display:flex;"><span><span style="color:#66d9ef">func</span> (<span style="color:#a6e22e">pc</span> <span style="color:#f92672">*</span><span style="color:#a6e22e">persistConn</span>) <span style="color:#a6e22e">writeLoop</span>() {    
+</span></span><span style="display:flex;"><span>    <span style="color:#66d9ef">for</span> {
+</span></span><span style="display:flex;"><span>        <span style="color:#66d9ef">select</span> {
+</span></span><span style="display:flex;"><span>        <span style="color:#66d9ef">case</span> <span style="color:#a6e22e">wr</span> <span style="color:#f92672">:=</span> <span style="color:#f92672">&lt;-</span><span style="color:#a6e22e">pc</span>.<span style="color:#a6e22e">writech</span>:
+</span></span><span style="display:flex;"><span>            <span style="color:#75715e">// ...
+</span></span></span><span style="display:flex;"><span><span style="color:#75715e"></span>            <span style="color:#a6e22e">err</span> <span style="color:#f92672">:=</span> <span style="color:#a6e22e">wr</span>.<span style="color:#a6e22e">req</span>.<span style="color:#a6e22e">Request</span>.<span style="color:#a6e22e">write</span>(<span style="color:#a6e22e">pc</span>.<span style="color:#a6e22e">bw</span>, <span style="color:#a6e22e">pc</span>.<span style="color:#a6e22e">isProxy</span>, <span style="color:#a6e22e">wr</span>.<span style="color:#a6e22e">req</span>.<span style="color:#a6e22e">extra</span>, <span style="color:#a6e22e">pc</span>.<span style="color:#a6e22e">waitForContinue</span>(<span style="color:#a6e22e">wr</span>.<span style="color:#a6e22e">continueCh</span>))
+</span></span><span style="display:flex;"><span>            <span style="color:#75715e">// ...       
+</span></span></span><span style="display:flex;"><span><span style="color:#75715e"></span>    }
+</span></span><span style="display:flex;"><span>}
+</span></span></code></pre></div><p>在伴生读协程 persisConn.readLoop 方法中，会读取来自服务端的响应，并添加到persistConn.reqCh 中，供上游 persistConn.roundTrip 方法接收.在伴生协协程 persisConn.writeLoop方法中，会通过 persistConn.writech 读取到客户端提交的请求，然后将其发送到服务端.<br>
+<strong>至此连接的创建可以正常开启通信</strong></p>
+<p>参考文章：<a href="https://mp.weixin.qq.com/s?__biz=MzkxMjQzMjA0OQ==&amp;mid=2247484040&amp;idx=1&amp;sn=b710f4429188ea5f49f6a9155381b67f&amp;chksm=c10c4c56f67bc540971550d92b4d9339fce806c9daf94e971fd71a1cca823f2bbcea863b3cc8&amp;scene=178&amp;cur_album_id=2709593649634033668#rd">Golang HTTP 标准库实现原理 公众号</a><br>
+参考视频：<a href="https://www.bilibili.com/video/BV1Hj411U7Zw?p=1">Golang HTTP 标准库实现原理 Bilibili</a></p>
+</section>
+
+  
+  
+
+  
+  
+  
+  
+  
+
+  
+  
+
+  
+  
+</article>
+
+
+    </main>
+
+    <footer
+  class="opaco mx-auto flex h-[4.5rem] max-w-3xl items-center px-8 text-[0.9em] opacity-60"
+>
+  <div class="mr-auto">
+    &copy; 2023
+    <a class="link" href="https://luuuweiii.github.io/">Luuuweiii Blog</a>
+  </div>
+  <a class="link mx-6" href="https://gohugo.io/" rel="noopener" target="_blank"
+    >Powered by Hugo️️</a
+  >️
+  <a
+    class="link"
+    href="https://github.com/nanxiaobei/hugo-paper"
+    rel="noopener"
+    target="_blank"
+    >✎ Paper</a
+  >
+</footer>
+
+  </body>
+</html>
