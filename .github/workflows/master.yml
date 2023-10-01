@@ -1,0 +1,31 @@
+name: github pages
+  
+on:
+  push:
+    branches:
+      - master  # 这里是提交到master分支就立即触发job
+  pull_request:
+  
+jobs:
+  deploy:
+    runs-on: CentOS 7.6
+    steps:
+      - uses: actions/checkout@v2
+        with:
+          submodules: true  # Fetch Hugo themes (true OR recursive)
+          fetch-depth: 0    # Fetch all history for .GitInfo and .Lastmod
+  
+      - name: Setup Hugo
+        uses: peaceiris/actions-hugo@v2
+        with:
+          hugo-version: '0.118.2'
+  
+      - name: Build
+        run: hugo --minify
+  
+      - name: Deploy
+        uses: peaceiris/actions-gh-pages@v3
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}  # 这里不用动, 默认就好
+          publish_dir: ./  # 注意是hugo的public文件夹
+          cname: www.luuuweiii.com # cname
